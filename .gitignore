@@ -32,30 +32,49 @@ ls-live-instance.json.tmp
 
 # Agent Skills & IDE Local Tooling
 agent/
+.agents/
+.gemini/
+.antigravity/
 tempAssetGen/
 skills-lock.json
 .claude/
+.claude-plugin/
 .cursor/
 .codex/
 .clad/
 .vscode/
+.idea/
+AGENTS.md
+CLAUDE.md
 
 # Lens Studio Generated / Cache / Locks / Workspace Layouts
 Cache/
 Workspaces/
 PluginsUserPreferences/
+BackUp/
 *.lock
 *.esproj.*.lock
+*.esproj.user
+*.tmp
+*.bak
+*.log
 .virtual-scene.json
 .virtual-scene.runtime.json
+ls-live-instance.json
+ls-live-instance.json.tmp
+spk_debug_key.pem
 
 # Node & Dependencies
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
 
 # OS & Environment
 .DS_Store
 Thumbs.db
 Desktop.ini
+.env
+.env.*

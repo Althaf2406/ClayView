@@ -10,6 +10,12 @@ import {
 import {
   SeriesConsistencyTracker,
 } from "../../Scripts/Core/SeriesConsistencyTracker";
+import {
+  FovNavigationMath,
+} from "../../Scripts/Core/FovNavigationMath";
+import {
+  LatheMeshGenerator,
+} from "../../Scripts/Core/LatheMeshGenerator";
 
 describe("ClayView - Pure TypeScript Core Engine", () => {
   describe("KilnShrinkageEngine", () => {
@@ -141,6 +147,46 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       assert.equal(history.length, 2);
       assert.equal(history[0].pieceNumber, 1);
       assert.equal(history[1].pieceNumber, 2);
+    });
+  });
+
+  describe("FovNavigationMath", () => {
+    test("detects off-screen status when gaze deviates beyond 16 degrees", () => {
+      const camPos = { x: 0, y: 0, z: 0 };
+      const wheelPos = { x: 0, y: -26, z: -55 };
+
+      // Looking directly toward the wheel center: 0 degree offset
+      const centeredEval = FovNavigationMath.evaluateGazeOffset(
+        camPos,
+        { x: 0, y: -26, z: -55 },
+        wheelPos
+      );
+      assert.equal(centeredEval.angleDeg, 0);
+      assert.equal(centeredEval.isOffscreen, false);
+
+      // Looking 45 degrees sideways: exceeds 16.0 degree threshold
+      const rotatedEval = FovNavigationMath.evaluateGazeOffset(
+        camPos,
+        { x: -38.89, y: -26, z: -38.89 },
+        wheelPos
+      );
+      assert.equal(rotatedEval.isOffscreen, true);
+      assert.equal(rotatedEval.angleDeg > 16.0, true);
+    });
+  });
+
+  describe("LatheMeshGenerator", () => {
+    test("generates 16 ribs and 6 contour rings for MeshTopology.Lines", () => {
+      const geom = LatheMeshGenerator.buildWireframe(
+        18.18,
+        [45.45, 70.45, 85.23, 77.27, 85.23]
+      );
+      // 6 rings * 16 ribs = 96 vertices
+      assert.equal(geom.vertexCount, 96);
+      assert.equal(geom.vertices.length, 96 * 7);
+      // Horizontal segments: 6 * 16 = 96; Vertical segments: 16 * 5 = 80; Total = 176 line segments
+      assert.equal(geom.lineSegmentCount, 176);
+      assert.equal(geom.indices.length, 176 * 2);
     });
   });
 });
