@@ -35,9 +35,9 @@ Potters working on a wheel have their hands coated in wet clay slip. Touching ph
 
 ### 1. Run Pure TypeScript Core Unit Tests (Node.js)
 ```bash
-npx tsx --test Assets/Tests/NodeCoreTests/clayview_core.test.ts
+npx tsx --test tests/clayview_core.test.ts
 ```
-Expected result: `10 pass, 0 fail` (100% green).
+Expected result: `11 pass, 0 fail` (100% green).
 
 ### 2. Run in Lens Studio & Execute CLAD / LEAF Scenarios
 1. Open **`ClayView.esproj`** in **Lens Studio** (recommended: **Lens Studio 5.23.2** if sign-in is blocked on 5.24, or **5.24+ / 5.25+** with Developer Sign-In active).

@@ -3,19 +3,19 @@ import assert from "node:assert/strict";
 import {
   KilnShrinkageEngine,
   FiredVesselSpec,
-} from "../../Scripts/Core/KilnShrinkageEngine";
+} from "../Assets/Scripts/Core/KilnShrinkageEngine";
 import {
   ProfileDeltaEvaluator,
-} from "../../Scripts/Core/ProfileDeltaEvaluator";
+} from "../Assets/Scripts/Core/ProfileDeltaEvaluator";
 import {
   SeriesConsistencyTracker,
-} from "../../Scripts/Core/SeriesConsistencyTracker";
+} from "../Assets/Scripts/Core/SeriesConsistencyTracker";
 import {
   FovNavigationMath,
-} from "../../Scripts/Core/FovNavigationMath";
+} from "../Assets/Scripts/Core/FovNavigationMath";
 import {
   LatheMeshGenerator,
-} from "../../Scripts/Core/LatheMeshGenerator";
+} from "../Assets/Scripts/Core/LatheMeshGenerator";
 
 describe("ClayView - Pure TypeScript Core Engine", () => {
   describe("KilnShrinkageEngine", () => {
@@ -151,9 +151,18 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
   });
 
   describe("FovNavigationMath", () => {
-    test("detects off-screen status when gaze deviates beyond 16 degrees", () => {
+    test("detects off-screen status when gaze deviates beyond 16 degrees horizontally", () => {
       const camPos = { x: 0, y: 0, z: 0 };
       const wheelPos = { x: 0, y: -26, z: -55 };
+
+      // Looking straight ahead along -Z (identity camera rotation): horizontal offset = 0 deg
+      const identityEval = FovNavigationMath.evaluateGazeOffset(
+        camPos,
+        { x: 0, y: 0, z: -1 },
+        wheelPos
+      );
+      assert.equal(identityEval.horizontalAngleDeg, 0);
+      assert.equal(identityEval.isOffscreen, false);
 
       // Looking directly toward the wheel center: 0 degree offset
       const centeredEval = FovNavigationMath.evaluateGazeOffset(
@@ -167,11 +176,11 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       // Looking 45 degrees sideways: exceeds 16.0 degree threshold
       const rotatedEval = FovNavigationMath.evaluateGazeOffset(
         camPos,
-        { x: -38.89, y: -26, z: -38.89 },
+        { x: -0.7071, y: 0, z: -0.7071 },
         wheelPos
       );
       assert.equal(rotatedEval.isOffscreen, true);
-      assert.equal(rotatedEval.angleDeg > 16.0, true);
+      assert.equal(rotatedEval.horizontalAngleDeg > 16.0, true);
     });
   });
 
@@ -187,6 +196,22 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       // Horizontal segments: 6 * 16 = 96; Vertical segments: 16 * 5 = 80; Total = 176 line segments
       assert.equal(geom.lineSegmentCount, 176);
       assert.equal(geom.indices.length, 176 * 2);
+    });
+
+    test("generates caliper gauge, solid spinning clay vessel, and wheel bat meshes", () => {
+      const caliper = LatheMeshGenerator.buildCaliperGauge(18.18);
+      assert.equal(caliper.lineSegmentCount, 6);
+
+      const vessel = LatheMeshGenerator.buildSolidVessel(
+        18.18,
+        [45.45, 70.45, 85.23, 77.27, 85.23]
+      );
+      assert.equal(vessel.triangleCount > 0, true);
+      assert.equal(vessel.vertices.length, vessel.vertexCount * 10);
+
+      const bat = LatheMeshGenerator.buildWheelBat(12.0, 1.2, 32);
+      assert.equal(bat.triangleCount, 32 + 64);
+      assert.equal(bat.vertices.length, bat.vertexCount * 10);
     });
   });
 });

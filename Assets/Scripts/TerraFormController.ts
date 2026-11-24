@@ -16,6 +16,19 @@ import {
   OPTICAL_PALETTE,
   RgbaColor,
 } from "./Core/LatheMeshGenerator";
+import { ClayViewStudioUI } from "./ClayViewStudioUI";
+import { Interactable } from "SpectaclesInteractionKit.lspkg/Components/Interaction/Interactable/Interactable";
+import { InteractableManipulation } from "SpectaclesInteractionKit.lspkg/Components/Interaction/InteractableManipulation/InteractableManipulation";
+
+const THEME_FONT = requireAsset("../Fonts/Inter.ttf") as Font;
+const IMAGE_MATERIAL = requireAsset("../Materials/ImageMaterial.mat") as Material;
+const ICON_ARROW = requireAsset("../Icons/arrow_forward.png") as Texture;
+const STABILITY_CHIME_TRACK = requireAsset(
+  "../GeneratedSFX/stability_chime.wav"
+) as AudioTrackAsset;
+const UI_CLICK_TRACK = requireAsset(
+  "../GeneratedSFX/ui_click.wav"
+) as AudioTrackAsset;
 
 export const DEFAULT_FIRED_VESSEL: FiredVesselSpec = {
   presetName: "Studio Cylinder Vase",
@@ -25,18 +38,30 @@ export const DEFAULT_FIRED_VESSEL: FiredVesselSpec = {
 
 /**
  * TerraFormController — Thin Lens Studio adapter connecting ClayView's Pure TypeScript Core
- * (`Assets/Scripts/Core/`) to procedural MeshBuilder wireframes, SIK interactions,
- * Snap AsrModule voice commands, spatial audio confirmation chimes, and LEAF test targets.
+ * (`Assets/Scripts/Core/`) to:
+ * - Procedural MeshBuilder GhostProfileMesh (16 ribs + 6 rings, MeshTopology.Lines)
+ * - Procedural SpinningClayMesh & PotteryWheelBat stand-in (MeshTopology.Triangles)
+ * - CaliperGaugeLine vertical height ruler at (-11.0, -26.0, -55.0) cm
+ * - SpectaclesUIKit ClayViewStudioUI at (+15.0, -21.0, -58.0) cm (width 9.0 cm)
+ * - SIK InteractableManipulation on ClayZoneHandle_Belly
+ * - Snap AsrModule hands-free voice commands ("next piece", "toggle wireframe", "set porcelain")
+ * - Spatial Audio confirmation chime (2.0s MATCH_TEAL stability hold)
+ * - Camera-relative EdgeGuidanceHUD / EdgeOfScreenArrow (> 16.0 deg off-screen)
  */
 @component
 export class TerraFormController extends BaseScriptComponent {
+  @ui.label('<span style="color: #4AF2FF;">TerraFormController — ClayView Main Adapter</span>')
+  @ui.separator
+  @ui.group_start("Assets & References")
   @input
-  @hint("Optional vertex color material for GhostProfileMesh and CaliperGaugeLine")
-  public wireframeMaterial?: Material;
+  @hint("Vertex color material (vertexBaseColorMaterial from SimpleVertexBaseColor.lspkg)")
+  public wireframeMaterial!: Material;
 
   @input
-  @hint("Optional stability confirmation chime AudioTrackAsset")
-  public stabilityChimeTrack?: AudioTrackAsset;
+  @allowUndefined
+  @hint("Optional pre-attached ClayViewStudioUI component on StudioCardAnchor")
+  public studioUI?: ClayViewStudioUI;
+  @ui.group_end
 
   private currentClayType: ClayType = "STONEWARE_12";
   private wetTarget: WetVesselTarget = KilnShrinkageEngine.computeWetTarget(
@@ -52,30 +77,37 @@ export class TerraFormController extends BaseScriptComponent {
   // SceneObject references
   private mainCameraObj: SceneObject | null = null;
   private wheelCenterAnchor: SceneObject | null = null;
+  private wheelBatObj: SceneObject | null = null;
+  private spinningClayObj: SceneObject | null = null;
   private ghostProfileMeshObj: SceneObject | null = null;
   private caliperGaugeLineObj: SceneObject | null = null;
   private studioCardAnchor: SceneObject | null = null;
   private bellyHandleObj: SceneObject | null = null;
   private edgeArrowObj: SceneObject | null = null;
 
-  // Text Component references
+  // Text Component reference on CaliperGaugeLine
   private targetHeightText: Text | null = null;
-  private shrinkageBadgeText: Text | null = null;
-  private bellyZoneStatusText: Text | null = null;
-  private matchPercentText: Text | null = null;
-  private pieceCounterText: Text | null = null;
 
   // Procedural MeshBuilder & Visual references
   private ghostMeshBuilder: MeshBuilder | null = null;
   private ghostMeshVisual: RenderMeshVisual | null = null;
+  private caliperMeshBuilder: MeshBuilder | null = null;
+  private caliperMeshVisual: RenderMeshVisual | null = null;
+  private clayMeshBuilder: MeshBuilder | null = null;
+  private clayMeshVisual: RenderMeshVisual | null = null;
+  private handleMeshBuilder: MeshBuilder | null = null;
+
+  // Wheel rotation state (60 RPM = 2*PI rad/sec, toned visually to 1.6 rad/s for smooth preview)
+  private wheelSpinAngleRad: number = 0;
 
   // Belly handle manipulation state
   private bellyHandleBaseLocalX: number = 0;
 
-  // Stability chime timer state (2.0s in MATCH_TEAL)
+  // Stability chime timer state (2.0s all-zones MATCH_TEAL)
   private tealStableSeconds: number = 0;
   private chimePlayedForCurrentHold: boolean = false;
   private chimeAudioComponent: AudioComponent | null = null;
+  private uiClickAudioComponent: AudioComponent | null = null;
 
   // ASR module handle
   private asrModule: any = null;
@@ -85,19 +117,18 @@ export class TerraFormController extends BaseScriptComponent {
     this.recomputeAndRefreshVisuals();
 
     this.createEvent("OnStartEvent").bind(() => {
-      this.bindInteractionsAndVoice();
+      this.bindUIAndVoice();
     });
 
     this.createEvent("UpdateEvent").bind((eventData) => {
       this.onUpdate(eventData.getDeltaTime());
     });
+
+    this.createEvent("OnDestroyEvent").bind(() => {
+      this.stopVoiceRecognition();
+    });
   }
 
-  /**
-   * Ensures all required SceneObjects, Text labels, and SIK Interactables exist
-   * at exact calibrated world coordinates so both Interactive Preview and LEAF scenarios
-   * find them deterministically.
-   */
   private ensureSceneHierarchy(): void {
     this.mainCameraObj =
       this.findObjectByName("MainCamera") ||
@@ -105,32 +136,50 @@ export class TerraFormController extends BaseScriptComponent {
       this.findObjectByName("Camera");
 
     if (this.mainCameraObj && this.mainCameraObj.name !== "MainCamera") {
-      // Create a child or alias reference named MainCamera if LEAF searches for "MainCamera"
-      const existingAlias = this.findObjectByName("MainCamera");
-      if (!existingAlias) {
-        this.mainCameraObj.name = "MainCamera";
-      }
+      this.mainCameraObj.name = "MainCamera";
     }
 
-    // 1. WheelCenterAnchor at (0, -26, -55) cm
+    // 1. WheelCenterAnchor at (0.0, -26.0, -55.0) cm (downward pitch -25.30 deg)
     this.wheelCenterAnchor = this.getOrCreateRootObject(
       "WheelCenterAnchor",
       new vec3(0.0, -26.0, -55.0)
     );
 
-    // Spatial AudioComponent on WheelCenterAnchor
-    this.chimeAudioComponent =
-      (this.wheelCenterAnchor.getComponent(
-        "Component.AudioComponent"
-      ) as AudioComponent) ||
-      (this.wheelCenterAnchor.createComponent(
-        "Component.AudioComponent"
-      ) as AudioComponent);
-    if (this.stabilityChimeTrack && this.chimeAudioComponent) {
-      this.chimeAudioComponent.audioTrack = this.stabilityChimeTrack;
+    // Spatial AudioComponents on WheelCenterAnchor (LowLatency playback)
+    this.chimeAudioComponent = this.wheelCenterAnchor.createComponent(
+      "Component.AudioComponent"
+    ) as AudioComponent;
+    this.chimeAudioComponent.audioTrack = STABILITY_CHIME_TRACK;
+    this.chimeAudioComponent.volume = 0.75;
+    if (typeof Audio !== "undefined" && Audio.PlaybackMode) {
+      this.chimeAudioComponent.playbackMode = Audio.PlaybackMode.LowLatency;
     }
 
-    // 2. GhostProfileMesh under WheelCenterAnchor
+    this.uiClickAudioComponent = this.wheelCenterAnchor.createComponent(
+      "Component.AudioComponent"
+    ) as AudioComponent;
+    this.uiClickAudioComponent.audioTrack = UI_CLICK_TRACK;
+    this.uiClickAudioComponent.volume = 0.6;
+    if (typeof Audio !== "undefined" && Audio.PlaybackMode) {
+      this.uiClickAudioComponent.playbackMode = Audio.PlaybackMode.LowLatency;
+    }
+
+    // 2. PotteryWheelBat (rotating wheel head platter)
+    this.wheelBatObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "PotteryWheelBat",
+      new vec3(0.0, 0.0, 0.0)
+    );
+    this.buildWheelBatMesh();
+
+    // 3. SpinningClayMesh (procedural rotating wet clay vessel stand-in)
+    this.spinningClayObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "SpinningClayMesh",
+      new vec3(0.0, 0.0, 0.0)
+    );
+
+    // 4. GhostProfileMesh (1:1 holographic lathe wireframe: 16 ribs + 6 rings)
     this.ghostProfileMeshObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "GhostProfileMesh",
@@ -138,7 +187,7 @@ export class TerraFormController extends BaseScriptComponent {
     );
     this.ghostProfileMeshObj.enabled = true;
 
-    // 3. CaliperGaugeLine at (-11.0, -26.0, -55.0) cm (local (-11, 0, 0) relative to WheelCenterAnchor)
+    // 5. CaliperGaugeLine at (-11.0, -26.0, -55.0) cm (local (-11, 0, 0))
     this.caliperGaugeLineObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "CaliperGaugeLine",
@@ -148,7 +197,7 @@ export class TerraFormController extends BaseScriptComponent {
     const targetHeightObj = this.getOrCreateChildObject(
       this.caliperGaugeLineObj,
       "TargetHeightText",
-      new vec3(0.0, 9.0, 0.0)
+      new vec3(-0.8, 9.5, 0.0)
     );
     this.targetHeightText = this.getOrCreateText(
       targetHeightObj,
@@ -157,7 +206,7 @@ export class TerraFormController extends BaseScriptComponent {
       new vec4(0.29, 0.95, 1.0, 1.0)
     );
 
-    // 4. ClayZoneHandle_Belly under WheelCenterAnchor for deformation simulation
+    // 6. ClayZoneHandle_Belly (SIK Interactable + InteractableManipulation handle)
     const initialBellyRadiusCm = this.wetTarget.wetRadiiMm[2] / 10.0;
     this.bellyHandleBaseLocalX = initialBellyRadiusCm;
     this.bellyHandleObj = this.getOrCreateChildObject(
@@ -165,158 +214,213 @@ export class TerraFormController extends BaseScriptComponent {
       "ClayZoneHandle_Belly",
       new vec3(initialBellyRadiusCm, this.wetTarget.wetHeightCm * 0.5, 0.0)
     );
-    this.ensureInteractable(this.bellyHandleObj, new vec3(4.0, 4.0, 4.0), true);
+    this.setupBellyHandle(this.bellyHandleObj);
 
-    // 5. StudioCardAnchor at (+15.0, -21.0, -58.0) cm (calibrated 9.0 cm width)
+    // 7. StudioCardAnchor at (+15.0, -21.0, -58.0) cm (calibrated 9.0 cm width)
     this.studioCardAnchor = this.getOrCreateRootObject(
       "StudioCardAnchor",
       new vec3(15.0, -21.0, -58.0)
     );
+    // Angle slightly inward toward user eye position for comfortable reading
+    this.studioCardAnchor
+      .getTransform()
+      .setWorldRotation(quat.fromEulerAngles(0, -12 * MathUtils.DegToRad, 0));
 
-    const badgeObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "ShrinkageBadgeText",
-      new vec3(0.0, 3.2, 0.6)
-    );
-    this.shrinkageBadgeText = this.getOrCreateText(
-      badgeObj,
-      "12% STONEWARE",
-      20,
-      new vec4(1.0, 0.99, 0.96, 1.0)
-    );
+    if (!this.studioUI) {
+      const existingUI = this.studioCardAnchor.getComponent(
+        ClayViewStudioUI.getTypeName()
+      ) as ClayViewStudioUI | null;
+      this.studioUI =
+        existingUI ||
+        (this.studioCardAnchor.createComponent(
+          ClayViewStudioUI.getTypeName()
+        ) as ClayViewStudioUI);
+    }
 
-    const counterObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "PieceCounterText",
-      new vec3(0.0, 1.6, 0.6)
-    );
-    this.pieceCounterText = this.getOrCreateText(
-      counterObj,
-      "Piece 1 of 6",
-      18,
-      new vec4(0.29, 0.95, 1.0, 1.0)
-    );
+    // 8. EdgeGuidanceHUD parented to MainCamera at (0, 0, -50) cm
+    const edgeHudObj = this.mainCameraObj
+      ? this.getOrCreateChildObject(
+          this.mainCameraObj,
+          "EdgeGuidanceHUD",
+          new vec3(0.0, 0.0, -50.0)
+        )
+      : this.getOrCreateRootObject(
+          "EdgeGuidanceHUD",
+          new vec3(0.0, 0.0, -50.0)
+        );
 
-    const bellyStatusObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "BellyZoneStatusText",
-      new vec3(0.0, 0.0, 0.6)
-    );
-    this.bellyZoneStatusText = this.getOrCreateText(
-      bellyStatusObj,
-      "MATCH_TEAL",
-      18,
-      new vec4(0.18, 0.9, 0.62, 1.0)
-    );
-
-    const matchObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "MatchPercentText",
-      new vec3(0.0, -1.6, 0.6)
-    );
-    this.matchPercentText = this.getOrCreateText(
-      matchObj,
-      "100%",
-      22,
-      new vec4(1.0, 0.99, 0.96, 1.0)
-    );
-
-    // Interactive Preview & LEAF Fallback Buttons under StudioCardAnchor
-    const cycleBtnObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "ShrinkageCycleBtn",
-      new vec3(0.0, -4.2, 0.6)
-    );
-    this.getOrCreateText(
-      cycleBtnObj,
-      "Cycle Clay %",
-      16,
-      new vec4(1.0, 0.99, 0.96, 1.0)
-    );
-    this.ensureInteractable(cycleBtnObj, new vec3(6.5, 2.4, 1.5), false);
-
-    const saveBtnObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "SavePieceBtn",
-      new vec3(0.0, -7.0, 0.6)
-    );
-    this.getOrCreateText(
-      saveBtnObj,
-      "Next Piece",
-      16,
-      new vec4(0.18, 0.9, 0.62, 1.0)
-    );
-    this.ensureInteractable(saveBtnObj, new vec3(6.5, 2.4, 1.5), false);
-
-    const toggleBtnObj = this.getOrCreateChildObject(
-      this.studioCardAnchor,
-      "ToggleWireframeBtn",
-      new vec3(0.0, -9.8, 0.6)
-    );
-    this.getOrCreateText(
-      toggleBtnObj,
-      "Toggle Mesh",
-      16,
-      new vec4(0.29, 0.95, 1.0, 1.0)
-    );
-    this.ensureInteractable(toggleBtnObj, new vec3(6.5, 2.4, 1.5), false);
-
-    // 6. EdgeGuidanceHUD & EdgeOfScreenArrow
-    const edgeHudObj = this.getOrCreateRootObject(
-      "EdgeGuidanceHUD",
-      new vec3(0.0, 0.0, -50.0)
-    );
     this.edgeArrowObj = this.getOrCreateChildObject(
       edgeHudObj,
       "EdgeOfScreenArrow",
-      new vec3(-12.0, -8.0, 0.0)
+      new vec3(-10.0, -6.5, 0.0)
     );
-    this.getOrCreateText(
-      this.edgeArrowObj,
-      "< WHEEL",
-      20,
-      new vec4(0.29, 0.95, 1.0, 1.0)
-    );
+    this.buildEdgeArrowVisual(this.edgeArrowObj);
     this.edgeArrowObj.enabled = false;
   }
 
-  /**
-   * Binds SIK Interactable triggers and Snap AsrModule voice commands inside OnStartEvent.
-   */
-  private bindInteractionsAndVoice(): void {
-    this.bindButtonTrigger("ShrinkageCycleBtn", () => {
-      this.cycleShrinkagePreset();
-    });
+  private buildWheelBatMesh(): void {
+    if (!this.wheelBatObj) return;
+    const geom = LatheMeshGenerator.buildWheelBat(12.0, 1.2, 32);
+    const builder = new MeshBuilder([
+      { name: "position", components: 3 },
+      { name: "normal", components: 3, normalized: true },
+      { name: "color", components: 4 },
+    ]);
+    builder.topology = MeshTopology.Triangles;
+    builder.indexType = MeshIndexType.UInt16;
+    builder.appendVerticesInterleaved(geom.vertices);
+    builder.appendIndices(geom.indices);
 
-    this.bindButtonTrigger("SavePieceBtn", () => {
-      this.saveCurrentPieceAndAdvance();
-    });
+    const rmv =
+      (this.wheelBatObj.getComponent(
+        "Component.RenderMeshVisual"
+      ) as RenderMeshVisual) ||
+      (this.wheelBatObj.createComponent(
+        "Component.RenderMeshVisual"
+      ) as RenderMeshVisual);
+    rmv.mesh = builder.getMesh();
+    if (this.wireframeMaterial) {
+      rmv.mainMaterial = this.wireframeMaterial;
+    }
+    builder.updateMesh();
+  }
 
-    this.bindButtonTrigger("ToggleWireframeBtn", () => {
-      this.toggleWireframeVisibility();
-    });
+  private setupBellyHandle(handleObj: SceneObject): void {
+    // Visual glowing diamond/octahedron beacon so the user sees the draggable belly handle
+    const half = 1.1;
+    const c = OPTICAL_PALETTE.CYAN;
+    const verts: number[] = [
+      // Top pyramid (4 faces, 3 verts each, CCW outward)
+      0, half, 0, c.r, c.g, c.b, 0.9,  0, 0, half, c.r, c.g, c.b, 0.9,   half, 0, 0, c.r, c.g, c.b, 0.9,
+      0, half, 0, c.r, c.g, c.b, 0.9,  half, 0, 0, c.r, c.g, c.b, 0.9,   0, 0, -half, c.r, c.g, c.b, 0.9,
+      0, half, 0, c.r, c.g, c.b, 0.9,  0, 0, -half, c.r, c.g, c.b, 0.9,  -half, 0, 0, c.r, c.g, c.b, 0.9,
+      0, half, 0, c.r, c.g, c.b, 0.9,  -half, 0, 0, c.r, c.g, c.b, 0.9,  0, 0, half, c.r, c.g, c.b, 0.9,
+      // Bottom pyramid (4 faces, CCW outward)
+      0, -half, 0, c.r, c.g, c.b, 0.9, half, 0, 0, c.r, c.g, c.b, 0.9,   0, 0, half, c.r, c.g, c.b, 0.9,
+      0, -half, 0, c.r, c.g, c.b, 0.9, 0, 0, -half, c.r, c.g, c.b, 0.9,  half, 0, 0, c.r, c.g, c.b, 0.9,
+      0, -half, 0, c.r, c.g, c.b, 0.9, -half, 0, 0, c.r, c.g, c.b, 0.9,  0, 0, -half, c.r, c.g, c.b, 0.9,
+      0, -half, 0, c.r, c.g, c.b, 0.9, 0, 0, half, c.r, c.g, c.b, 0.9,   -half, 0, 0, c.r, c.g, c.b, 0.9,
+    ];
+    const indices: number[] = [];
+    for (let i = 0; i < 24; i++) indices.push(i);
+
+    this.handleMeshBuilder = new MeshBuilder([
+      { name: "position", components: 3 },
+      { name: "color", components: 4 },
+    ]);
+    this.handleMeshBuilder.topology = MeshTopology.Triangles;
+    this.handleMeshBuilder.indexType = MeshIndexType.UInt16;
+    this.handleMeshBuilder.appendVerticesInterleaved(verts);
+    this.handleMeshBuilder.appendIndices(indices);
+
+    const rmv =
+      (handleObj.getComponent(
+        "Component.RenderMeshVisual"
+      ) as RenderMeshVisual) ||
+      (handleObj.createComponent(
+        "Component.RenderMeshVisual"
+      ) as RenderMeshVisual);
+    rmv.mesh = this.handleMeshBuilder.getMesh();
+    if (this.wireframeMaterial) {
+      rmv.mainMaterial = this.wireframeMaterial;
+    }
+    this.handleMeshBuilder.updateMesh();
+
+    // Physics Collider for SIK raycast/direct targeting
+    let collider = handleObj.getComponent(
+      "Physics.ColliderComponent"
+    ) as ColliderComponent | null;
+    if (!collider) {
+      collider = handleObj.createComponent(
+        "Physics.ColliderComponent"
+      ) as ColliderComponent;
+      const boxShape = Shape.createBoxShape();
+      boxShape.size = new vec3(4.0, 4.0, 4.0);
+      collider.shape = boxShape;
+    }
+
+    // SIK Interactable + InteractableManipulation (translate enabled, rotate/scale off)
+    let interactable = handleObj.getComponent(
+      Interactable.getTypeName()
+    ) as Interactable | null;
+    if (!interactable) {
+      interactable = handleObj.createComponent(
+        Interactable.getTypeName()
+      ) as Interactable;
+    }
+
+    let manip = handleObj.getComponent(
+      InteractableManipulation.getTypeName()
+    ) as InteractableManipulation | null;
+    if (!manip) {
+      manip = handleObj.createComponent(
+        InteractableManipulation.getTypeName()
+      ) as InteractableManipulation;
+    }
+    if (manip) {
+      manip.setCanTranslate(true);
+      manip.setCanRotate(false);
+      manip.setCanScale(false);
+    }
+  }
+
+  private buildEdgeArrowVisual(arrowObj: SceneObject): void {
+    const iconSO = this.getOrCreateChildObject(
+      arrowObj,
+      "EdgeArrowIcon",
+      new vec3(0, 0.8, 0)
+    );
+    const img =
+      (iconSO.getComponent("Component.Image") as Image) ||
+      (iconSO.createComponent("Component.Image") as Image);
+    const mat = IMAGE_MATERIAL.clone();
+    mat.mainPass.baseTex = ICON_ARROW;
+    mat.mainPass.baseColor = new vec4(0.29, 0.95, 1.0, 1.0);
+    mat.mainPass.depthTest = true;
+    mat.mainPass.depthWrite = false;
+    img.clearMaterials();
+    img.addMaterial(mat);
+    iconSO.getTransform().setLocalScale(new vec3(2.8, 2.8, 1));
+    // Flip arrow_forward to point left toward the wheel
+    iconSO
+      .getTransform()
+      .setLocalRotation(quat.fromEulerAngles(0, 0, Math.PI));
+
+    const labelSO = this.getOrCreateChildObject(
+      arrowObj,
+      "EdgeArrowLabel",
+      new vec3(0, -1.2, 0)
+    );
+    this.getOrCreateText(
+      labelSO,
+      "WHEEL",
+      18,
+      new vec4(0.29, 0.95, 1.0, 1.0)
+    );
+  }
+
+  private bindUIAndVoice(): void {
+    if (this.studioUI) {
+      this.studioUI.onCycleShrinkage.add(() => {
+        this.playUiClick();
+        this.cycleShrinkagePreset();
+      });
+      this.studioUI.onSavePiece.add(() => {
+        this.playUiClick();
+        this.saveCurrentPieceAndAdvance();
+      });
+      this.studioUI.onToggleWireframe.add(() => {
+        this.playUiClick();
+        this.toggleWireframeVisibility();
+      });
+    }
 
     this.initVoiceRecognition();
   }
 
-  private bindButtonTrigger(
-    objectName: string,
-    callback: () => void
-  ): void {
-    const obj = this.findObjectByName(objectName);
-    if (!obj) return;
-
-    const components = obj.getComponents("Component.ScriptComponent");
-    for (let i = 0; i < components.length; i++) {
-      const comp = components[i] as any;
-      if (comp && comp.onTriggerUp && typeof comp.onTriggerUp.add === "function") {
-        comp.onTriggerUp.add(callback);
-        return;
-      }
-      if (comp && comp.onTriggerEnd && typeof comp.onTriggerEnd.add === "function") {
-        comp.onTriggerEnd.add(callback);
-        return;
-      }
+  private playUiClick(): void {
+    if (this.uiClickAudioComponent && this.uiClickAudioComponent.audioTrack) {
+      this.uiClickAudioComponent.play(1);
     }
   }
 
@@ -337,13 +441,25 @@ export class TerraFormController extends BaseScriptComponent {
         }
       );
 
-      options.onTranscriptionErrorEvent.add((_errorCode: AsrModule.AsrStatusCode) => {
-        // Fallback SIK buttons remain active when offline or in Desktop Preview
-      });
+      options.onTranscriptionErrorEvent.add(
+        (_errorCode: AsrModule.AsrStatusCode) => {
+          // Offline / Desktop Preview gracefully relies on 1:1 SIK UI buttons
+        }
+      );
 
       this.asrModule.startTranscribing(options);
     } catch (_e) {
-      // AsrModule unavailable in non-Spectacles environment; SIK buttons act as 1:1 stand-in
+      // AsrModule unavailable in non-Spectacles environment
+    }
+  }
+
+  private stopVoiceRecognition(): void {
+    try {
+      if (this.asrModule && typeof this.asrModule.stopTranscribing === "function") {
+        this.asrModule.stopTranscribing();
+      }
+    } catch (_e) {
+      // Ignore cleanup errors
     }
   }
 
@@ -353,17 +469,20 @@ export class TerraFormController extends BaseScriptComponent {
       normalized.includes("next piece") ||
       normalized.includes("save piece")
     ) {
+      this.playUiClick();
       this.saveCurrentPieceAndAdvance();
     } else if (
       normalized.includes("toggle wireframe") ||
       normalized.includes("hide wireframe") ||
       normalized.includes("show wireframe")
     ) {
+      this.playUiClick();
       this.toggleWireframeVisibility();
     } else if (
       normalized.includes("set porcelain") ||
       normalized.includes("clay porcelain")
     ) {
+      this.playUiClick();
       this.setShrinkagePreset("PORCELAIN_14");
     }
   }
@@ -408,8 +527,11 @@ export class TerraFormController extends BaseScriptComponent {
       this.currentClayType
     );
 
-    // Reset zone deformation handles for the new piece
+    // Reset zone deformation handles for next piece
     this.zoneRadiusOffsetsMm = [0, 0, 0, 0, 0];
+    this.tealStableSeconds = 0;
+    this.chimePlayedForCurrentHold = false;
+
     if (this.bellyHandleObj) {
       const baseRadiusCm = this.wetTarget.wetRadiiMm[2] / 10.0;
       this.bellyHandleBaseLocalX = baseRadiusCm;
@@ -430,7 +552,17 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   private onUpdate(dt: number): void {
-    // 1. Check if ClayZoneHandle_Belly has been dragged in world/local space
+    // 1. Spin wheel bat & wet clay mesh continuously
+    this.wheelSpinAngleRad = (this.wheelSpinAngleRad + dt * 1.6) % (Math.PI * 2);
+    const spinQuat = quat.fromEulerAngles(0, this.wheelSpinAngleRad, 0);
+    if (this.wheelBatObj) {
+      this.wheelBatObj.getTransform().setLocalRotation(spinQuat);
+    }
+    if (this.spinningClayObj) {
+      this.spinningClayObj.getTransform().setLocalRotation(spinQuat);
+    }
+
+    // 2. Track ClayZoneHandle_Belly drag offset in cm -> mm
     if (this.bellyHandleObj) {
       const currentLocalX = this.bellyHandleObj
         .getTransform()
@@ -443,16 +575,13 @@ export class TerraFormController extends BaseScriptComponent {
       }
     }
 
-    // 2. Evaluate 2.0s stability chime timer
+    // 3. Stability chime timer: play once after 2.0s continuous MATCH_TEAL across all 5 zones
     const summary = this.evaluateCurrentProfile();
     if (summary.allZonesStable) {
       this.tealStableSeconds += dt;
       if (this.tealStableSeconds >= 2.0 && !this.chimePlayedForCurrentHold) {
         this.chimePlayedForCurrentHold = true;
-        if (
-          this.chimeAudioComponent &&
-          this.chimeAudioComponent.audioTrack
-        ) {
+        if (this.chimeAudioComponent && this.chimeAudioComponent.audioTrack) {
           this.chimeAudioComponent.play(1);
         }
       }
@@ -461,7 +590,7 @@ export class TerraFormController extends BaseScriptComponent {
       this.chimePlayedForCurrentHold = false;
     }
 
-    // 3. Evaluate Off-Screen Navigation (DC-5: > 16.0 degrees away from WheelCenterAnchor)
+    // 4. Off-Screen Navigation check (DC-5: > 16.0 deg horizontal yaw away from WheelCenterAnchor)
     this.updateOffscreenGuidance();
   }
 
@@ -472,16 +601,12 @@ export class TerraFormController extends BaseScriptComponent {
 
     const camTransform = this.mainCameraObj.getTransform();
     const camPos = camTransform.getWorldPosition();
-    const camFwd = camTransform.forward;
+    const camBack = camTransform.back; // In Lens Studio, camera looks down local -Z (transform.back)
     const anchorPos = this.wheelCenterAnchor.getTransform().getWorldPosition();
 
-    // Note: in Lens Studio, a camera's default look direction is -Z (transform.back),
-    // while rotating yaw by 45 degrees changes transform.back / transform.forward equally.
-    // We check against the vector pointing toward the initial wheel direction or -Z.
-    const lookDir = new vec3(-camFwd.x, -camFwd.y, -camFwd.z);
     const evalResult = FovNavigationMath.evaluateGazeOffset(
       { x: camPos.x, y: camPos.y, z: camPos.z },
-      { x: lookDir.x, y: lookDir.y, z: lookDir.z },
+      { x: camBack.x, y: camBack.y, z: camBack.z },
       { x: anchorPos.x, y: anchorPos.y, z: anchorPos.z },
       FovNavigationMath.OFFSCREEN_THRESHOLD_DEG
     );
@@ -492,19 +617,25 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   private evaluateCurrentProfile(): ProfileEvaluationSummary {
-    const actualRadiiMm = this.wetTarget.wetRadiiMm.map(
-      (targetR, idx) => targetR + this.zoneRadiusOffsetsMm[idx]
-    );
+    const actualRadiiMm = this.getActualRadiiMm();
     return ProfileDeltaEvaluator.evaluateProfile(
       this.wetTarget.wetRadiiMm,
       actualRadiiMm
     );
   }
 
+  private getActualRadiiMm(): number[] {
+    return this.wetTarget.wetRadiiMm.map(
+      (targetR, idx) => targetR + this.zoneRadiusOffsetsMm[idx]
+    );
+  }
+
   private recomputeAndRefreshVisuals(): void {
     const summary = this.evaluateCurrentProfile();
     const bellyStatus = summary.zones[2].status;
+    const zoneStatuses = summary.zones.map((z) => z.status);
 
+    // Update CaliperGaugeLine height text
     if (this.targetHeightText) {
       this.targetHeightText.text = KilnShrinkageEngine.formatHeightCm(
         this.wetTarget.wetHeightCm,
@@ -512,47 +643,45 @@ export class TerraFormController extends BaseScriptComponent {
       );
     }
 
-    if (this.shrinkageBadgeText) {
-      this.shrinkageBadgeText.text = KilnShrinkageEngine.getDisplayLabel(
-        this.currentClayType
+    // Update UIKit Studio Card HUD
+    if (this.studioUI) {
+      this.studioUI.updateMetrics(
+        KilnShrinkageEngine.getDisplayLabel(this.currentClayType),
+        this.seriesTracker.getCounterLabel(),
+        bellyStatus,
+        summary.matchPercentage
       );
     }
 
-    if (this.bellyZoneStatusText) {
-      this.bellyZoneStatusText.text = bellyStatus;
-      this.bellyZoneStatusText.textFill.color = this.statusToVec4(bellyStatus);
-    }
-
-    if (this.matchPercentText) {
-      this.matchPercentText.text = `${summary.matchPercentage}%`;
-    }
-
-    if (this.pieceCounterText) {
-      this.pieceCounterText.text = this.seriesTracker.getCounterLabel();
-    }
-
-    this.rebuildGhostWireframeMesh(bellyStatus);
+    this.rebuildGhostWireframeMesh(bellyStatus, zoneStatuses);
+    this.rebuildCaliperGaugeMesh();
+    this.rebuildSpinningClayMesh();
   }
 
-  private rebuildGhostWireframeMesh(bellyStatus: ToleranceStatus): void {
-    if (!this.ghostProfileMeshObj || typeof MeshBuilder === "undefined") {
-      return;
-    }
+  private rebuildGhostWireframeMesh(
+    bellyStatus: ToleranceStatus,
+    zoneStatuses: readonly ToleranceStatus[]
+  ): void {
+    if (!this.ghostProfileMeshObj) return;
 
-    const ribColor: RgbaColor =
-      bellyStatus === "OVER_CORAL" || bellyStatus === "UNDER_CORAL"
-        ? OPTICAL_PALETTE.ALERT_CORAL
-        : bellyStatus === "WARN_AMBER"
-        ? OPTICAL_PALETTE.WARN_AMBER
-        : this.currentClayType === "PORCELAIN_14"
+    const baseRibColor: RgbaColor =
+      this.currentClayType === "PORCELAIN_14"
         ? OPTICAL_PALETTE.CYAN
         : OPTICAL_PALETTE.IVORY;
+
+    const ringColor: RgbaColor =
+      bellyStatus === "MATCH_TEAL"
+        ? OPTICAL_PALETTE.MATCH_TEAL
+        : OPTICAL_PALETTE.CYAN;
 
     const geom = LatheMeshGenerator.buildWireframe(
       this.wetTarget.wetHeightCm,
       this.wetTarget.wetRadiiMm,
-      ribColor,
-      OPTICAL_PALETTE.CYAN
+      baseRibColor,
+      ringColor,
+      LatheMeshGenerator.DEFAULT_RIB_COUNT,
+      LatheMeshGenerator.DEFAULT_RING_COUNT,
+      zoneStatuses
     );
 
     if (!this.ghostMeshBuilder) {
@@ -563,14 +692,10 @@ export class TerraFormController extends BaseScriptComponent {
       this.ghostMeshBuilder.topology = MeshTopology.Lines;
       this.ghostMeshBuilder.indexType = MeshIndexType.UInt16;
     } else {
-      const currentVerts = this.ghostMeshBuilder.getVerticesCount();
-      if (currentVerts > 0) {
-        this.ghostMeshBuilder.eraseVertices(0, currentVerts);
-      }
-      const currentIndices = this.ghostMeshBuilder.getIndicesCount();
-      if (currentIndices > 0) {
-        this.ghostMeshBuilder.eraseIndices(0, currentIndices);
-      }
+      const vCount = this.ghostMeshBuilder.getVerticesCount();
+      if (vCount > 0) this.ghostMeshBuilder.eraseVertices(0, vCount);
+      const iCount = this.ghostMeshBuilder.getIndicesCount();
+      if (iCount > 0) this.ghostMeshBuilder.eraseIndices(0, iCount);
     }
 
     this.ghostMeshBuilder.appendVerticesInterleaved(geom.vertices);
@@ -595,15 +720,96 @@ export class TerraFormController extends BaseScriptComponent {
     }
   }
 
-  private statusToVec4(status: ToleranceStatus): vec4 {
-    switch (status) {
-      case "MATCH_TEAL":
-        return new vec4(0.18, 0.9, 0.62, 1.0);
-      case "WARN_AMBER":
-        return new vec4(1.0, 0.78, 0.34, 1.0);
-      case "OVER_CORAL":
-      case "UNDER_CORAL":
-        return new vec4(1.0, 0.42, 0.42, 1.0);
+  private rebuildCaliperGaugeMesh(): void {
+    if (!this.caliperGaugeLineObj) return;
+    const geom = LatheMeshGenerator.buildCaliperGauge(
+      this.wetTarget.wetHeightCm,
+      OPTICAL_PALETTE.CYAN
+    );
+
+    if (!this.caliperMeshBuilder) {
+      this.caliperMeshBuilder = new MeshBuilder([
+        { name: "position", components: 3 },
+        { name: "color", components: 4 },
+      ]);
+      this.caliperMeshBuilder.topology = MeshTopology.Lines;
+      this.caliperMeshBuilder.indexType = MeshIndexType.UInt16;
+    } else {
+      const vCount = this.caliperMeshBuilder.getVerticesCount();
+      if (vCount > 0) this.caliperMeshBuilder.eraseVertices(0, vCount);
+      const iCount = this.caliperMeshBuilder.getIndicesCount();
+      if (iCount > 0) this.caliperMeshBuilder.eraseIndices(0, iCount);
+    }
+
+    this.caliperMeshBuilder.appendVerticesInterleaved(geom.vertices);
+    this.caliperMeshBuilder.appendIndices(geom.indices);
+
+    if (!this.caliperMeshVisual) {
+      this.caliperMeshVisual =
+        (this.caliperGaugeLineObj.getComponent(
+          "Component.RenderMeshVisual"
+        ) as RenderMeshVisual) ||
+        (this.caliperGaugeLineObj.createComponent(
+          "Component.RenderMeshVisual"
+        ) as RenderMeshVisual);
+    }
+
+    if (this.caliperMeshBuilder.isValid()) {
+      this.caliperMeshVisual.mesh = this.caliperMeshBuilder.getMesh();
+      if (this.wireframeMaterial) {
+        this.caliperMeshVisual.mainMaterial = this.wireframeMaterial;
+      }
+      this.caliperMeshBuilder.updateMesh();
+    }
+  }
+
+  private rebuildSpinningClayMesh(): void {
+    if (!this.spinningClayObj) return;
+    const clayColor =
+      this.currentClayType === "PORCELAIN_14"
+        ? OPTICAL_PALETTE.CLAY_PORCELAIN
+        : OPTICAL_PALETTE.CLAY_STONEWARE;
+
+    const geom = LatheMeshGenerator.buildSolidVessel(
+      this.wetTarget.wetHeightCm,
+      this.getActualRadiiMm(),
+      clayColor
+    );
+
+    if (!this.clayMeshBuilder) {
+      this.clayMeshBuilder = new MeshBuilder([
+        { name: "position", components: 3 },
+        { name: "normal", components: 3, normalized: true },
+        { name: "color", components: 4 },
+      ]);
+      this.clayMeshBuilder.topology = MeshTopology.Triangles;
+      this.clayMeshBuilder.indexType = MeshIndexType.UInt16;
+    } else {
+      const vCount = this.clayMeshBuilder.getVerticesCount();
+      if (vCount > 0) this.clayMeshBuilder.eraseVertices(0, vCount);
+      const iCount = this.clayMeshBuilder.getIndicesCount();
+      if (iCount > 0) this.clayMeshBuilder.eraseIndices(0, iCount);
+    }
+
+    this.clayMeshBuilder.appendVerticesInterleaved(geom.vertices);
+    this.clayMeshBuilder.appendIndices(geom.indices);
+
+    if (!this.clayMeshVisual) {
+      this.clayMeshVisual =
+        (this.spinningClayObj.getComponent(
+          "Component.RenderMeshVisual"
+        ) as RenderMeshVisual) ||
+        (this.spinningClayObj.createComponent(
+          "Component.RenderMeshVisual"
+        ) as RenderMeshVisual);
+    }
+
+    if (this.clayMeshBuilder.isValid()) {
+      this.clayMeshVisual.mesh = this.clayMeshBuilder.getMesh();
+      if (this.wireframeMaterial) {
+        this.clayMeshVisual.mainMaterial = this.wireframeMaterial;
+      }
+      this.clayMeshBuilder.updateMesh();
     }
   }
 
@@ -628,12 +834,6 @@ export class TerraFormController extends BaseScriptComponent {
         return child;
       }
     }
-    const existing = this.findObjectByName(name);
-    if (existing) {
-      existing.setParent(parent);
-      existing.getTransform().setLocalPosition(localPos);
-      return existing;
-    }
     const created = global.scene.createSceneObject(name);
     created.setParent(parent);
     created.getTransform().setLocalPosition(localPos);
@@ -651,59 +851,17 @@ export class TerraFormController extends BaseScriptComponent {
       textComp = obj.createComponent("Component.Text") as Text;
     }
     textComp.text = initialText;
+    textComp.font = THEME_FONT;
     textComp.size = size;
     textComp.depthTest = true;
+    textComp.horizontalAlignment = HorizontalAlignment.Center;
+    textComp.verticalAlignment = VerticalAlignment.Center;
+    textComp.horizontalOverflow = HorizontalOverflow.Overflow;
+    textComp.verticalOverflow = VerticalOverflow.Overflow;
     if (textComp.textFill) {
       textComp.textFill.color = color;
     }
     return textComp;
-  }
-
-  private ensureInteractable(
-    obj: SceneObject,
-    boxSizeCm: vec3,
-    isDraggable: boolean
-  ): void {
-    let collider = obj.getComponent(
-      "Physics.ColliderComponent"
-    ) as ColliderComponent | null;
-    if (!collider) {
-      collider = obj.createComponent(
-        "Physics.ColliderComponent"
-      ) as ColliderComponent;
-      const boxShape = Shape.createBoxShape();
-      boxShape.size = boxSizeCm;
-      collider.shape = boxShape;
-    }
-
-    try {
-      const {
-        Interactable,
-      } = require("SpectaclesInteractionKit.lspkg/Components/Interaction/Interactable/Interactable");
-      if (Interactable) {
-        let interactable = obj.getComponent(Interactable.getTypeName());
-        if (!interactable) {
-          interactable = obj.createComponent(Interactable.getTypeName());
-        }
-      }
-
-      if (isDraggable) {
-        const {
-          InteractableManipulation,
-        } = require("SpectaclesInteractionKit.lspkg/Components/Interaction/InteractableManipulation/InteractableManipulation");
-        if (InteractableManipulation) {
-          let manip = obj.getComponent(InteractableManipulation.getTypeName());
-          if (!manip) {
-            manip = obj.createComponent(InteractableManipulation.getTypeName());
-            if (manip && typeof manip.setCanTranslate === "function") {
-              manip.setCanTranslate(true);
-            }
-          }
-        }
-      }
-    } catch (_e) {
-      // SIK package resolved at runtime inside Lens Studio
-    }
   }
 
   private findObjectByName(name: string): SceneObject | null {
