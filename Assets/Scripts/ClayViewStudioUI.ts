@@ -34,10 +34,10 @@ const TYPE_SCALE: Record<TextRole, { size: number; weight: number }> = {
   Headline1: { size: 54, weight: 700 },
   Headline2: { size: 48, weight: 700 },
   Subheadline: { size: 41, weight: 700 },
-  Button: { size: 39, weight: 500 },
+  Button: { size: 36, weight: 500 },
   Callout: { size: 39, weight: 700 },
-  Body: { size: 39, weight: 500 },
-  Caption: { size: 34, weight: 500 },
+  Body: { size: 38, weight: 500 },
+  Caption: { size: 32, weight: 500 },
 };
 
 function roleSize(role: TextRole, distanceCm: number = DIST_CM): number {
@@ -73,12 +73,12 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   @input
   @hint("Inner horizontal/vertical padding in cm")
   @widget(new SliderWidget(0.3, 1.2, 0.1))
-  public paddingCm: number = 0.6;
+  public paddingCm: number = 0.55;
 
   @input
   @hint("Row spacing in cm")
   @widget(new SliderWidget(0.2, 1.0, 0.05))
-  public rowGapCm: number = 0.45;
+  public rowGapCm: number = 0.4;
 
   @input
   @hint("Primary Ivory text color for additive LCOS display")
@@ -109,6 +109,8 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   private _onCycleShrinkage = new Event<void>();
   private _onSavePiece = new Event<void>();
   private _onToggleWireframe = new Event<void>();
+  private _onCyclePreset = new Event<void>();
+  private _onResetClay = new Event<void>();
 
   public get onCycleShrinkage(): PublicApi<void> {
     return this._onCycleShrinkage.publicApi();
@@ -119,12 +121,18 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   public get onToggleWireframe(): PublicApi<void> {
     return this._onToggleWireframe.publicApi();
   }
+  public get onCyclePreset(): PublicApi<void> {
+    return this._onCyclePreset.publicApi();
+  }
+  public get onResetClay(): PublicApi<void> {
+    return this._onResetClay.publicApi();
+  }
 
   private shrinkageBadgeText: Text | null = null;
   private pieceCounterText: Text | null = null;
   private bellyZoneStatusText: Text | null = null;
   private matchPercentText: Text | null = null;
-  private statusIconImage: Image | null = null;
+  private presetBtnLabelText: Text | null = null;
   private statusIconMat: Material | null = null;
   private built: boolean = false;
 
@@ -145,7 +153,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     const backPlate = this.sceneObject.createComponent(
       BackPlate.getTypeName()
     ) as BackPlate;
-    backPlate.size = new vec2(this.cardWidthCm, 14.5);
+    backPlate.size = new vec2(this.cardWidthCm, 16.0);
 
     // Content container lifted +0.6 cm in Z to avoid z-fighting with BackPlate
     const content = global.scene.createSceneObject("Content");
@@ -167,12 +175,11 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     flex.onLayoutComplete.add((r) => {
       backPlate.size = new vec2(
         Math.max(this.cardWidthCm, r.containerWidth),
-        Math.max(11.0, r.containerHeight)
+        Math.max(12.0, r.containerHeight)
       );
     });
 
     const innerW = this.cardWidthCm - this.paddingCm * 2;
-    const flexItems: FlexItem[] = [];
 
     // 1. Header Row: Mic icon + "CLAYVIEW"
     const headerRow = global.scene.createSceneObject("HeaderRow");
@@ -183,22 +190,24 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     headerFlex.direction = FlexDirection.Row;
     headerFlex.alignItems = FlexAlign.Center;
     headerFlex.justifyContent = FlexJustify.Center;
-    headerFlex.columnGap = 0.35;
+    headerFlex.columnGap = 0.3;
     headerFlex.width = innerW;
-    headerFlex.height = 1.2;
+    headerFlex.height = 1.15;
     const headerItem = headerRow.createComponent(
       FlexItem.getTypeName()
     ) as FlexItem;
     headerItem.alignSelf = FlexAlignSelf.Stretch;
-    headerItem.overrideHeight = 1.2;
-    flexItems.push(headerItem);
+    headerItem.overrideHeight = 1.15;
 
-    const headerChildren: FlexItem[] = [];
-    headerChildren.push(this.addIcon(headerRow, "AsrMicIcon", ICON_MIC, 0.9, this.cyanColor).item);
-    headerChildren.push(
-      this.addRowText(headerRow, "HeaderTitle", "CLAYVIEW", "Subheadline", innerW - 1.4, this.ivoryColor).item
+    this.addIcon(headerRow, "AsrMicIcon", ICON_MIC, 0.85, this.cyanColor);
+    this.addRowText(
+      headerRow,
+      "HeaderTitle",
+      "CLAYVIEW",
+      "Subheadline",
+      4.6,
+      this.ivoryColor
     );
-    headerFlex.addItems(headerChildren);
 
     // 2. ShrinkageBadgeText ("12% STONEWARE" -> "14% PORCELAIN")
     const badge = this.addColumnText(
@@ -206,11 +215,10 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       "ShrinkageBadgeText",
       "12% STONEWARE",
       "Callout",
-      1.15,
+      1.1,
       this.cyanColor
     );
     this.shrinkageBadgeText = badge.text;
-    flexItems.push(badge.item);
 
     // 3. PieceCounterText ("Piece 1 of 6" -> "Piece 2 of 6")
     const counter = this.addColumnText(
@@ -218,11 +226,10 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       "PieceCounterText",
       "Piece 1 of 6",
       "Body",
-      1.05,
+      1.0,
       this.ivoryColor
     );
     this.pieceCounterText = counter.text;
-    flexItems.push(counter.item);
 
     // 4. Status Row: Status Icon + BellyZoneStatusText ("MATCH_TEAL" / "OVER_CORAL")
     const statusRow = global.scene.createSceneObject("StatusRow");
@@ -233,15 +240,14 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     statusFlex.direction = FlexDirection.Row;
     statusFlex.alignItems = FlexAlign.Center;
     statusFlex.justifyContent = FlexJustify.Center;
-    statusFlex.columnGap = 0.3;
+    statusFlex.columnGap = 0.25;
     statusFlex.width = innerW;
-    statusFlex.height = 1.15;
+    statusFlex.height = 1.1;
     const statusItem = statusRow.createComponent(
       FlexItem.getTypeName()
     ) as FlexItem;
     statusItem.alignSelf = FlexAlignSelf.Stretch;
-    statusItem.overrideHeight = 1.15;
-    flexItems.push(statusItem);
+    statusItem.overrideHeight = 1.1;
 
     const statusIcon = this.addIcon(
       statusRow,
@@ -250,18 +256,16 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       0.85,
       this.tealColor
     );
-    this.statusIconImage = statusIcon.image;
     this.statusIconMat = statusIcon.material;
     const bellyStatus = this.addRowText(
       statusRow,
       "BellyZoneStatusText",
       "MATCH_TEAL",
       "Callout",
-      innerW - 1.3,
+      5.4,
       this.tealColor
     );
     this.bellyZoneStatusText = bellyStatus.text;
-    statusFlex.addItems([statusIcon.item, bellyStatus.item]);
 
     // 5. MatchPercentText ("100%")
     const match = this.addColumnText(
@@ -269,68 +273,78 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       "MatchPercentText",
       "100%",
       "Headline1",
-      1.55,
+      1.45,
       this.ivoryColor
     );
     this.matchPercentText = match.text;
-    flexItems.push(match.item);
 
-    // 6. Action Buttons (UIKit Button = SIK Interactable for mouse & LEAF)
-    const btnW = Math.min(7.6, innerW);
-    const btnH = 1.75;
+    // 6. Primary Action Buttons (UIKit Button = SIK Interactable for mouse & LEAF)
+    const btnW = Math.min(7.8, innerW);
+    const btnH = 1.45;
 
-    flexItems.push(
-      this.addActionButton(
-        content,
-        "ShrinkageCycleBtn",
-        "Cycle Clay %",
-        btnW,
-        btnH,
-        () => this._onCycleShrinkage.invoke()
-      )
+    this.addActionButton(
+      content,
+      "ShrinkageCycleBtn",
+      "Cycle Clay %",
+      btnW,
+      btnH,
+      () => this._onCycleShrinkage.invoke()
     );
 
-    flexItems.push(
-      this.addActionButton(
-        content,
-        "SavePieceBtn",
-        "Next Piece",
-        btnW,
-        btnH,
-        () => this._onSavePiece.invoke()
-      )
+    const presetBtn = this.addActionButton(
+      content,
+      "PresetShapeBtn",
+      "Shape: Vase",
+      btnW,
+      btnH,
+      () => this._onCyclePreset.invoke()
+    );
+    this.presetBtnLabelText = presetBtn.labelText;
+
+    this.addActionButton(
+      content,
+      "SavePieceBtn",
+      "Next Piece",
+      btnW,
+      btnH,
+      () => this._onSavePiece.invoke()
     );
 
-    flexItems.push(
-      this.addActionButton(
-        content,
-        "ToggleWireframeBtn",
-        "Toggle Mesh",
-        btnW,
-        btnH,
-        () => this._onToggleWireframe.invoke()
-      )
+    this.addActionButton(
+      content,
+      "ToggleWireframeBtn",
+      "Toggle Mesh",
+      btnW,
+      btnH,
+      () => this._onToggleWireframe.invoke()
     );
 
-    // 7. Honest Preview Stand-In Caption
-    const standin = this.addColumnText(
+    this.addActionButton(
+      content,
+      "ResetClayBtn",
+      "Reset Clay",
+      btnW,
+      btnH,
+      () => this._onResetClay.invoke()
+    );
+
+    // 8. Honest Preview Stand-In Caption
+    this.addColumnText(
       content,
       "PreviewStandInCaption",
-      "Stand-In: Clay & Drag",
+      "Hand Tool (In/Out) + 5 Zones",
       "Caption",
-      0.9,
+      0.85,
       new vec4(1.0, 0.99, 0.96, 0.65)
     );
-    flexItems.push(standin.item);
-
-    flex.addItems(flexItems);
   }
 
   public updateMetrics(
     shrinkageLabel: string,
     pieceCounterLabel: string,
     bellyStatus: ToleranceStatus,
-    matchPercentage: number
+    matchPercentage: number,
+    vesselPresetName?: string
   ): void {
     if (this.shrinkageBadgeText) {
       this.shrinkageBadgeText.text = shrinkageLabel;
@@ -352,6 +366,17 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     }
     if (this.matchPercentText) {
       this.matchPercentText.text = `${matchPercentage}%`;
+    }
+    if (vesselPresetName && this.presetBtnLabelText) {
+      const shortName =
+        vesselPresetName === "Cylinder Vase"
+          ? "Vase"
+          : vesselPresetName === "Tea Bowl"
+          ? "Bowl"
+          : vesselPresetName === "Studio Mug"
+          ? "Mug"
+          : vesselPresetName;
+      this.presetBtnLabelText.text = `Shape: ${shortName}`;
     }
   }
 
@@ -423,7 +448,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
 
     const item = so.createComponent(FlexItem.getTypeName()) as FlexItem;
     item.overrideWidth = widthCm;
-    item.overrideHeight = 1.1;
+    item.overrideHeight = 1.05;
     return { text: t, item };
   }
 
@@ -460,7 +485,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     widthCm: number,
     heightCm: number,
     onClick: () => void
-  ): FlexItem {
+  ): { item: FlexItem; labelText: Text } {
     const so = global.scene.createSceneObject(name);
     so.setParent(parent);
 
@@ -489,13 +514,13 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     t.verticalAlignment = VerticalAlignment.Center;
     t.horizontalOverflow = HorizontalOverflow.Overflow;
     t.verticalOverflow = VerticalOverflow.Overflow;
-    const labelW = Math.max(1.0, widthCm - 0.5);
-    t.layoutRect = Rect.create(-labelW / 2, labelW / 2, -0.7, 0.7);
+    const labelW = Math.max(1.0, widthCm - 0.4);
+    t.layoutRect = Rect.create(-labelW / 2, labelW / 2, -0.65, 0.65);
 
     const item = so.createComponent(FlexItem.getTypeName()) as FlexItem;
     item.alignSelf = FlexAlignSelf.Center;
     item.overrideWidth = widthCm;
     item.overrideHeight = heightCm;
-    return item;
+    return { item, labelText: t };
   }
 }

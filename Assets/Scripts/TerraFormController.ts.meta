@@ -28,7 +28,8 @@
   ExportUid: 00000000-0000-0000-0000-000000000000
   PackagePolicy: CanBeUnpacked
   ScriptInputsHidden:
-    {}
+    studioUI: false
+    wireframeMaterial: false
   ScriptTypesHidden:
     {}
   ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
@@ -38,10 +39,15 @@
   Attachments:
     []
   DefaultScriptInputs:
-    -
-      {}
+    - wireframeMaterial: !<reference.Material> 00000000-0000-0000-0000-000000000000
+      studioUI: !<MappingBased.AssignableType_1> 00000000-0000-0000-0000-000000000000
   ScriptTypes:
     -
       {}
   InputLines:
-    []
+    - '// @ui {"widget":"label", "label":"<span style=\"color: #4AF2FF;\">TerraFormController — ClayView Main Adapter</span>"}'
+    - '// @ui {"widget":"separator"}'
+    - '// @ui {"widget":"group_start", "label":"Assets & References"}'
+    - '// @input Asset.Material wireframeMaterial {"hint":"Vertex color material (vertexBaseColorMaterial from SimpleVertexBaseColor.lspkg)"}'
+    - '// @input AssignableType_1 studioUI {"hint":"Optional pre-attached ClayViewStudioUI component on StudioCardAnchor"}'
+    - '// @ui {"widget":"group_end"}'

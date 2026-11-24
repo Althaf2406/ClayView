@@ -28,7 +28,14 @@
   ExportUid: 00000000-0000-0000-0000-000000000000
   PackagePolicy: CanBeUnpacked
   ScriptInputsHidden:
-    {}
+    amberColor: false
+    cardWidthCm: false
+    coralColor: false
+    cyanColor: false
+    ivoryColor: false
+    paddingCm: false
+    rowGapCm: false
+    tealColor: false
   ScriptTypesHidden:
     {}
   ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
@@ -38,10 +45,27 @@
   Attachments:
     []
   DefaultScriptInputs:
-    -
-      {}
+    - cardWidthCm: !<float> 9.000000
+      paddingCm: 0.600000
+      rowGapCm: 0.450000
+      ivoryColor: !<Vec4> {x: 1.000000, y: 0.990000, z: 0.960000, w: 1.000000}
+      cyanColor: !<Vec4> {x: 0.290000, y: 0.950000, z: 1.000000, w: 1.000000}
+      tealColor: !<Vec4> {x: 0.180000, y: 0.900000, z: 0.620000, w: 1.000000}
+      amberColor: !<Vec4> {x: 1.000000, y: 0.780000, z: 0.340000, w: 1.000000}
+      coralColor: !<Vec4> {x: 1.000000, y: 0.420000, z: 0.420000, w: 1.000000}
   ScriptTypes:
     -
       {}
   InputLines:
-    []
+    - '// @ui {"widget":"label", "label":"<span style=\"color: #4AF2FF;\">ClayViewStudioUI — Studio Card HUD</span>"}'
+    - '// @ui {"widget":"separator"}'
+    - '// @ui {"widget":"group_start", "label":"Settings"}'
+    - '// @input float cardWidthCm = 9 {"hint":"Calibrated card width in cm (must be <= 9.0 cm at x=+15, z=-58)", "widget":"slider", "min":7, "max":11, "step":0.5}'
+    - '// @input float paddingCm = 0.55 {"hint":"Inner horizontal/vertical padding in cm", "widget":"slider", "min":0.3, "max":1.2, "step":0.1}'
+    - '// @input float rowGapCm = 0.4 {"hint":"Row spacing in cm", "widget":"slider", "min":0.2, "max":1, "step":0.05}'
+    - '// @input vec4 ivoryColor = {1,0.99,0.96,1} {"hint":"Primary Ivory text color for additive LCOS display", "widget":"color"}'
+    - '// @input vec4 cyanColor = {0.29,0.95,1,1} {"hint":"Accent Cyan color for secondary labels and porcelain highlights", "widget":"color"}'
+    - '// @input vec4 tealColor = {0.18,0.9,0.62,1} {"hint":"Teal color for <= 2 mm tolerance match", "widget":"color"}'
+    - '// @input vec4 amberColor = {1,0.78,0.34,1} {"hint":"Amber color for 2-4 mm tolerance warning", "widget":"color"}'
+    - '// @input vec4 coralColor = {1,0.42,0.42,1} {"hint":"Coral color for > 4 mm critical deviation", "widget":"color"}'
+    - '// @ui {"widget":"group_end"}'

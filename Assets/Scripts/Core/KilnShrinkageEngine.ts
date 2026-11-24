@@ -53,7 +53,44 @@ const CYCLE_ORDER: readonly ClayType[] = [
   "PORCELAIN_14",
 ];
 
+export const VESSEL_PRESETS: readonly FiredVesselSpec[] = [
+  {
+    presetName: "Cylinder Vase",
+    firedHeightCm: 16.0,
+    zoneFiredRadiiMm: [40.0, 62.0, 75.0, 68.0, 75.0],
+  },
+  {
+    presetName: "Tea Bowl",
+    firedHeightCm: 10.5,
+    zoneFiredRadiiMm: [38.0, 66.0, 82.0, 80.0, 84.0],
+  },
+  {
+    presetName: "Amphora",
+    firedHeightCm: 17.5,
+    zoneFiredRadiiMm: [36.0, 70.0, 84.0, 48.0, 42.0],
+  },
+  {
+    presetName: "Studio Mug",
+    firedHeightCm: 12.0,
+    zoneFiredRadiiMm: [46.0, 48.0, 49.0, 48.0, 50.0],
+  },
+];
+
 export class KilnShrinkageEngine {
+  public static getPresetCount(): number {
+    return VESSEL_PRESETS.length;
+  }
+
+  public static getPreset(index: number): FiredVesselSpec {
+    const safeIdx =
+      ((index % VESSEL_PRESETS.length) + VESSEL_PRESETS.length) %
+      VESSEL_PRESETS.length;
+    return VESSEL_PRESETS[safeIdx];
+  }
+
+  public static nextPresetIndex(currentIndex: number): number {
+    return (currentIndex + 1) % VESSEL_PRESETS.length;
+  }
   public static getShrinkRate(clayType: ClayType): number {
     return CLAY_PRESETS[clayType].shrinkRate;
   }

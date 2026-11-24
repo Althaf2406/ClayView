@@ -8,6 +8,7 @@ import {
   ProfileDeltaEvaluator,
   ProfileEvaluationSummary,
   ToleranceStatus,
+  VESSEL_ZONE_NAMES,
 } from "./Core/ProfileDeltaEvaluator";
 import { SeriesConsistencyTracker } from "./Core/SeriesConsistencyTracker";
 import { FovNavigationMath } from "./Core/FovNavigationMath";
@@ -16,9 +17,15 @@ import {
   OPTICAL_PALETTE,
   RgbaColor,
 } from "./Core/LatheMeshGenerator";
+import {
+  ClayDeformationState,
+  ClayWheelPhysicsEngine,
+  HandContactMode,
+} from "./Core/ClayWheelPhysicsEngine";
 import { ClayViewStudioUI } from "./ClayViewStudioUI";
 import { Interactable } from "SpectaclesInteractionKit.lspkg/Components/Interaction/Interactable/Interactable";
-import { InteractableManipulation } from "SpectaclesInteractionKit.lspkg/Components/Interaction/InteractableManipulation/InteractableManipulation";
+import { DragInteractorEvent } from "SpectaclesInteractionKit.lspkg/Core/Interactor/InteractorEvent";
+import { HandInputData } from "SpectaclesInteractionKit.lspkg/Providers/HandInputData/HandInputData";
 
 const THEME_FONT = requireAsset("../Fonts/Inter.ttf") as Font;
 const IMAGE_MATERIAL = requireAsset("../Materials/ImageMaterial.mat") as Material;
@@ -30,23 +37,31 @@ const UI_CLICK_TRACK = requireAsset(
   "../GeneratedSFX/ui_click.wav"
 ) as AudioTrackAsset;
 
-export const DEFAULT_FIRED_VESSEL: FiredVesselSpec = {
-  presetName: "Studio Cylinder Vase",
-  firedHeightCm: 16.0,
-  zoneFiredRadiiMm: [40.0, 62.0, 75.0, 68.0, 75.0],
-};
+interface ZoneHandleSlot {
+  readonly zoneIndex: number;
+  readonly name: string;
+  readonly heightFraction: number;
+  sceneObject: SceneObject;
+  interactable: Interactable;
+  meshBuilder: MeshBuilder;
+  meshVisual: RenderMeshVisual;
+}
+
+const ZONE_HEIGHT_FRACTIONS: readonly number[] = [0.06, 0.28, 0.5, 0.74, 0.96];
 
 /**
  * TerraFormController — Thin Lens Studio adapter connecting ClayView's Pure TypeScript Core
  * (`Assets/Scripts/Core/`) to:
- * - Procedural MeshBuilder GhostProfileMesh (16 ribs + 6 rings, MeshTopology.Lines)
- * - Procedural SpinningClayMesh & PotteryWheelBat stand-in (MeshTopology.Triangles)
- * - CaliperGaugeLine vertical height ruler at (-11.0, -26.0, -55.0) cm
- * - SpectaclesUIKit ClayViewStudioUI at (+15.0, -21.0, -58.0) cm (width 9.0 cm)
- * - SIK InteractableManipulation on ClayZoneHandle_Belly
- * - Snap AsrModule hands-free voice commands ("next piece", "toggle wireframe", "set porcelain")
- * - Spatial Audio confirmation chime (2.0s MATCH_TEAL stability hold)
- * - Camera-relative EdgeGuidanceHUD / EdgeOfScreenArrow (> 16.0 deg off-screen)
+ * - Viscoelastic, volume-conserving clay throwing physics (`ClayWheelPhysicsEngine`):
+ *   squeezing inward raises height, widening settles height, pulling taller narrows walls,
+ *   and neighboring zones flow organically together.
+ * - Real SPECS dual-hand contact sculpting (`HandInputData` left & right hands): reach in from
+ *   the top cavity to push walls outward, or cup from outside to collar/pull walls taller.
+ * - Free 3D Draggable `PotterHandTool` for Interactive Preview: dip inside from the top or
+ *   sculpt from the outside with real-time `SculptContactRing` feedback.
+ * - 5 interactive radial zone handles + top `ClayHeightHandle` + 4 ceramic vessel presets.
+ * - CaliperGaugeLine (`-11, -26, -55` cm), UIKit Studio Card (`+15, -21, -58` cm),
+ *   Snap AsrModule voice commands, Spatial Audio chime, and EdgeGuidanceHUD.
  */
 @component
 export class TerraFormController extends BaseScriptComponent {
@@ -63,14 +78,23 @@ export class TerraFormController extends BaseScriptComponent {
   public studioUI?: ClayViewStudioUI;
   @ui.group_end
 
+  private currentPresetIndex: number = 0;
+  private currentVesselSpec: FiredVesselSpec = KilnShrinkageEngine.getPreset(0);
   private currentClayType: ClayType = "STONEWARE_12";
   private wetTarget: WetVesselTarget = KilnShrinkageEngine.computeWetTarget(
-    DEFAULT_FIRED_VESSEL,
+    KilnShrinkageEngine.getPreset(0),
     "STONEWARE_12"
   );
-  private zoneRadiusOffsetsMm: [number, number, number, number, number] = [
-    0, 0, 0, 0, 0,
-  ];
+
+  // Coupled viscoelastic clay state (5 zone offsets in mm + live actual height in cm)
+  private clayState: ClayDeformationState = {
+    zoneOffsetsMm: [0, 0, 0, 0, 0],
+    actualHeightCm: KilnShrinkageEngine.computeWetTarget(
+      KilnShrinkageEngine.getPreset(0),
+      "STONEWARE_12"
+    ).wetHeightCm,
+  };
+
   private seriesTracker: SeriesConsistencyTracker =
     new SeriesConsistencyTracker(6);
 
@@ -82,11 +106,35 @@ export class TerraFormController extends BaseScriptComponent {
   private ghostProfileMeshObj: SceneObject | null = null;
   private caliperGaugeLineObj: SceneObject | null = null;
   private studioCardAnchor: SceneObject | null = null;
-  private bellyHandleObj: SceneObject | null = null;
   private edgeArrowObj: SceneObject | null = null;
 
-  // Text Component reference on CaliperGaugeLine
+  // All 5 zone handles + top height handle
+  private zoneHandles: ZoneHandleSlot[] = [];
+  private heightHandleObj: SceneObject | null = null;
+  private heightHandleInteractable: Interactable | null = null;
+  private heightHandleBuilder: MeshBuilder | null = null;
+
+  // Free 3D PotterHandTool (dip inside from top OR squeeze from outside in Preview!)
+  private potterHandToolObj: SceneObject | null = null;
+  private potterHandToolInteractable: Interactable | null = null;
+  private potterHandToolBuilder: MeshBuilder | null = null;
+  private potterHandToolLabel: Text | null = null;
+  private potterHandToolLocalPos: vec3 = new vec3(-5.0, 21.5, 0.0);
+
+  // Live glowing horizontal SculptContactRing on the clay at active hand height
+  private contactRingObj: SceneObject | null = null;
+  private contactRingBuilder: MeshBuilder | null = null;
+  private contactRingVisual: RenderMeshVisual | null = null;
+  private contactRingFadeTimer: number = 0;
+
+  // Real SPECS Hand Tracking state (left + right hands)
+  private handInputData: HandInputData | null = null;
+  private prevLeftHandLocal: vec3 | null = null;
+  private prevRightHandLocal: vec3 | null = null;
+
+  // Text Component references on CaliperGaugeLine
   private targetHeightText: Text | null = null;
+  private actualHeightText: Text | null = null;
 
   // Procedural MeshBuilder & Visual references
   private ghostMeshBuilder: MeshBuilder | null = null;
@@ -95,15 +143,11 @@ export class TerraFormController extends BaseScriptComponent {
   private caliperMeshVisual: RenderMeshVisual | null = null;
   private clayMeshBuilder: MeshBuilder | null = null;
   private clayMeshVisual: RenderMeshVisual | null = null;
-  private handleMeshBuilder: MeshBuilder | null = null;
 
-  // Wheel rotation state (60 RPM = 2*PI rad/sec, toned visually to 1.6 rad/s for smooth preview)
+  // Wheel rotation state
   private wheelSpinAngleRad: number = 0;
 
-  // Belly handle manipulation state
-  private bellyHandleBaseLocalX: number = 0;
-
-  // Stability chime timer state (2.0s all-zones MATCH_TEAL)
+  // Stability chime timer state (2.0s all-zones MATCH_TEAL & height on target)
   private tealStableSeconds: number = 0;
   private chimePlayedForCurrentHold: boolean = false;
   private chimeAudioComponent: AudioComponent | null = null;
@@ -113,11 +157,17 @@ export class TerraFormController extends BaseScriptComponent {
   private asrModule: any = null;
 
   onAwake(): void {
+    try {
+      this.handInputData = HandInputData.getInstance();
+    } catch (_e) {
+      this.handInputData = null;
+    }
+
     this.ensureSceneHierarchy();
     this.recomputeAndRefreshVisuals();
 
     this.createEvent("OnStartEvent").bind(() => {
-      this.bindUIAndVoice();
+      this.bindUIHandlesAndVoice();
     });
 
     this.createEvent("UpdateEvent").bind((eventData) => {
@@ -127,6 +177,22 @@ export class TerraFormController extends BaseScriptComponent {
     this.createEvent("OnDestroyEvent").bind(() => {
       this.stopVoiceRecognition();
     });
+  }
+
+  private getActualHeightCm(): number {
+    return this.clayState.actualHeightCm;
+  }
+
+  private getHeightToleranceStatus(): ToleranceStatus {
+    const deltaCm = this.getActualHeightCm() - this.wetTarget.wetHeightCm;
+    const absCm = Math.abs(deltaCm);
+    if (absCm > 0.8) {
+      return deltaCm >= 0 ? "OVER_CORAL" : "UNDER_CORAL";
+    }
+    if (absCm > 0.4) {
+      return "WARN_AMBER";
+    }
+    return "MATCH_TEAL";
   }
 
   private ensureSceneHierarchy(): void {
@@ -172,7 +238,7 @@ export class TerraFormController extends BaseScriptComponent {
     );
     this.buildWheelBatMesh();
 
-    // 3. SpinningClayMesh (procedural rotating wet clay vessel stand-in)
+    // 3. SpinningClayMesh (procedural rotating hollow wet clay vessel stand-in)
     this.spinningClayObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "SpinningClayMesh",
@@ -187,7 +253,15 @@ export class TerraFormController extends BaseScriptComponent {
     );
     this.ghostProfileMeshObj.enabled = true;
 
-    // 5. CaliperGaugeLine at (-11.0, -26.0, -55.0) cm (local (-11, 0, 0))
+    // 5. SculptContactRing (live horizontal highlight ring at active hand contact height)
+    this.contactRingObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "SculptContactRing",
+      new vec3(0.0, 9.0, 0.0)
+    );
+    this.contactRingObj.enabled = false;
+
+    // 6. CaliperGaugeLine at (-11.0, -26.0, -55.0) cm (local (-11, 0, 0))
     this.caliperGaugeLineObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "CaliperGaugeLine",
@@ -197,7 +271,7 @@ export class TerraFormController extends BaseScriptComponent {
     const targetHeightObj = this.getOrCreateChildObject(
       this.caliperGaugeLineObj,
       "TargetHeightText",
-      new vec3(-0.8, 9.5, 0.0)
+      new vec3(-0.8, 10.5, 0.0)
     );
     this.targetHeightText = this.getOrCreateText(
       targetHeightObj,
@@ -206,22 +280,100 @@ export class TerraFormController extends BaseScriptComponent {
       new vec4(0.29, 0.95, 1.0, 1.0)
     );
 
-    // 6. ClayZoneHandle_Belly (SIK Interactable + InteractableManipulation handle)
-    const initialBellyRadiusCm = this.wetTarget.wetRadiiMm[2] / 10.0;
-    this.bellyHandleBaseLocalX = initialBellyRadiusCm;
-    this.bellyHandleObj = this.getOrCreateChildObject(
-      this.wheelCenterAnchor,
-      "ClayZoneHandle_Belly",
-      new vec3(initialBellyRadiusCm, this.wetTarget.wetHeightCm * 0.5, 0.0)
+    const actualHeightObj = this.getOrCreateChildObject(
+      this.caliperGaugeLineObj,
+      "ActualHeightText",
+      new vec3(-0.8, 8.2, 0.0)
     );
-    this.setupBellyHandle(this.bellyHandleObj);
+    this.actualHeightText = this.getOrCreateText(
+      actualHeightObj,
+      "Clay: 18.18 cm",
+      18,
+      new vec4(0.18, 0.9, 0.62, 1.0)
+    );
 
-    // 7. StudioCardAnchor at (+15.0, -21.0, -58.0) cm (calibrated 9.0 cm width)
+    // 7. All 5 Radial Sculpting Zone Handles (Base, LowerBelly, Belly, Shoulder, Rim)
+    this.zoneHandles = [];
+    for (let idx = 0; idx < VESSEL_ZONE_NAMES.length; idx++) {
+      const zoneName = VESSEL_ZONE_NAMES[idx];
+      const handleName = `ClayZoneHandle_${zoneName}`;
+      const heightFrac = ZONE_HEIGHT_FRACTIONS[idx];
+      const radiusCm = this.wetTarget.wetRadiiMm[idx] / 10.0;
+      const handleObj = this.getOrCreateChildObject(
+        this.wheelCenterAnchor,
+        handleName,
+        new vec3(radiusCm + 0.9, this.wetTarget.wetHeightCm * heightFrac, 1.8)
+      );
+      const isBelly = idx === 2;
+      const built = this.setupDiamondHandle(
+        handleObj,
+        isBelly ? 1.05 : 0.8,
+        isBelly ? new vec3(4.0, 3.2, 4.0) : new vec3(3.0, 2.6, 3.0),
+        OPTICAL_PALETTE.MATCH_TEAL
+      );
+      this.zoneHandles.push({
+        zoneIndex: idx,
+        name: handleName,
+        heightFraction: heightFrac,
+        sceneObject: handleObj,
+        interactable: built.interactable,
+        meshBuilder: built.meshBuilder,
+        meshVisual: built.meshVisual,
+      });
+    }
+
+    // 8. Dedicated Top Height Handle (ClayHeightHandle) — drag UP/DOWN to stretch/compress clay
+    this.heightHandleObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "ClayHeightHandle",
+      new vec3(0.0, this.wetTarget.wetHeightCm + 1.5, 0.0)
+    );
+    const heightBuilt = this.setupDiamondHandle(
+      this.heightHandleObj,
+      1.1,
+      new vec3(4.2, 3.0, 4.2),
+      OPTICAL_PALETTE.CYAN
+    );
+    this.heightHandleInteractable = heightBuilt.interactable;
+    this.heightHandleBuilder = heightBuilt.meshBuilder;
+
+    // 9. Free 3D PotterHandTool — grab & dip INSIDE from top to push outward, or squeeze OUTSIDE!
+    this.potterHandToolLocalPos = new vec3(
+      -5.2,
+      this.wetTarget.wetHeightCm + 2.4,
+      0.0
+    );
+    this.potterHandToolObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "PotterHandTool",
+      this.potterHandToolLocalPos
+    );
+    const handToolBuilt = this.setupDiamondHandle(
+      this.potterHandToolObj,
+      1.35,
+      new vec3(4.6, 4.6, 4.6),
+      OPTICAL_PALETTE.WARN_AMBER
+    );
+    this.potterHandToolInteractable = handToolBuilt.interactable;
+    this.potterHandToolBuilder = handToolBuilt.meshBuilder;
+
+    const handLabelObj = this.getOrCreateChildObject(
+      this.potterHandToolObj,
+      "PotterHandToolLabel",
+      new vec3(0.0, 2.0, 0.0)
+    );
+    this.potterHandToolLabel = this.getOrCreateText(
+      handLabelObj,
+      "Hand Tool",
+      15,
+      new vec4(1.0, 0.85, 0.45, 1.0)
+    );
+
+    // 10. StudioCardAnchor at (+15.0, -21.0, -58.0) cm (calibrated 9.0 cm width)
     this.studioCardAnchor = this.getOrCreateRootObject(
       "StudioCardAnchor",
       new vec3(15.0, -21.0, -58.0)
     );
-    // Angle slightly inward toward user eye position for comfortable reading
     this.studioCardAnchor
       .getTransform()
       .setWorldRotation(quat.fromEulerAngles(0, -12 * MathUtils.DegToRad, 0));
@@ -237,7 +389,7 @@ export class TerraFormController extends BaseScriptComponent {
         ) as ClayViewStudioUI);
     }
 
-    // 8. EdgeGuidanceHUD parented to MainCamera at (0, 0, -50) cm
+    // 11. EdgeGuidanceHUD parented to MainCamera at (0, 0, -50) cm
     const edgeHudObj = this.mainCameraObj
       ? this.getOrCreateChildObject(
           this.mainCameraObj,
@@ -285,33 +437,26 @@ export class TerraFormController extends BaseScriptComponent {
     builder.updateMesh();
   }
 
-  private setupBellyHandle(handleObj: SceneObject): void {
-    // Visual glowing diamond/octahedron beacon so the user sees the draggable belly handle
-    const half = 1.1;
-    const c = OPTICAL_PALETTE.CYAN;
-    const verts: number[] = [
-      // Top pyramid (4 faces, 3 verts each, CCW outward)
-      0, half, 0, c.r, c.g, c.b, 0.9,  0, 0, half, c.r, c.g, c.b, 0.9,   half, 0, 0, c.r, c.g, c.b, 0.9,
-      0, half, 0, c.r, c.g, c.b, 0.9,  half, 0, 0, c.r, c.g, c.b, 0.9,   0, 0, -half, c.r, c.g, c.b, 0.9,
-      0, half, 0, c.r, c.g, c.b, 0.9,  0, 0, -half, c.r, c.g, c.b, 0.9,  -half, 0, 0, c.r, c.g, c.b, 0.9,
-      0, half, 0, c.r, c.g, c.b, 0.9,  -half, 0, 0, c.r, c.g, c.b, 0.9,  0, 0, half, c.r, c.g, c.b, 0.9,
-      // Bottom pyramid (4 faces, CCW outward)
-      0, -half, 0, c.r, c.g, c.b, 0.9, half, 0, 0, c.r, c.g, c.b, 0.9,   0, 0, half, c.r, c.g, c.b, 0.9,
-      0, -half, 0, c.r, c.g, c.b, 0.9, 0, 0, -half, c.r, c.g, c.b, 0.9,  half, 0, 0, c.r, c.g, c.b, 0.9,
-      0, -half, 0, c.r, c.g, c.b, 0.9, -half, 0, 0, c.r, c.g, c.b, 0.9,  0, 0, -half, c.r, c.g, c.b, 0.9,
-      0, -half, 0, c.r, c.g, c.b, 0.9, 0, 0, half, c.r, c.g, c.b, 0.9,   -half, 0, 0, c.r, c.g, c.b, 0.9,
-    ];
-    const indices: number[] = [];
-    for (let i = 0; i < 24; i++) indices.push(i);
+  private setupDiamondHandle(
+    handleObj: SceneObject,
+    halfSizeCm: number,
+    colliderSizeCm: vec3,
+    color: RgbaColor
+  ): {
+    interactable: Interactable;
+    meshBuilder: MeshBuilder;
+    meshVisual: RenderMeshVisual;
+  } {
+    const geom = LatheMeshGenerator.buildHandleDiamond(halfSizeCm, color);
 
-    this.handleMeshBuilder = new MeshBuilder([
+    const builder = new MeshBuilder([
       { name: "position", components: 3 },
       { name: "color", components: 4 },
     ]);
-    this.handleMeshBuilder.topology = MeshTopology.Triangles;
-    this.handleMeshBuilder.indexType = MeshIndexType.UInt16;
-    this.handleMeshBuilder.appendVerticesInterleaved(verts);
-    this.handleMeshBuilder.appendIndices(indices);
+    builder.topology = MeshTopology.Triangles;
+    builder.indexType = MeshIndexType.UInt16;
+    builder.appendVerticesInterleaved(geom.vertices);
+    builder.appendIndices(geom.indices);
 
     const rmv =
       (handleObj.getComponent(
@@ -320,13 +465,12 @@ export class TerraFormController extends BaseScriptComponent {
       (handleObj.createComponent(
         "Component.RenderMeshVisual"
       ) as RenderMeshVisual);
-    rmv.mesh = this.handleMeshBuilder.getMesh();
+    rmv.mesh = builder.getMesh();
     if (this.wireframeMaterial) {
       rmv.mainMaterial = this.wireframeMaterial;
     }
-    this.handleMeshBuilder.updateMesh();
+    builder.updateMesh();
 
-    // Physics Collider for SIK raycast/direct targeting
     let collider = handleObj.getComponent(
       "Physics.ColliderComponent"
     ) as ColliderComponent | null;
@@ -335,11 +479,10 @@ export class TerraFormController extends BaseScriptComponent {
         "Physics.ColliderComponent"
       ) as ColliderComponent;
       const boxShape = Shape.createBoxShape();
-      boxShape.size = new vec3(4.0, 4.0, 4.0);
+      boxShape.size = colliderSizeCm;
       collider.shape = boxShape;
     }
 
-    // SIK Interactable + InteractableManipulation (translate enabled, rotate/scale off)
     let interactable = handleObj.getComponent(
       Interactable.getTypeName()
     ) as Interactable | null;
@@ -349,19 +492,99 @@ export class TerraFormController extends BaseScriptComponent {
       ) as Interactable;
     }
 
-    let manip = handleObj.getComponent(
-      InteractableManipulation.getTypeName()
-    ) as InteractableManipulation | null;
-    if (!manip) {
-      manip = handleObj.createComponent(
-        InteractableManipulation.getTypeName()
-      ) as InteractableManipulation;
+    return { interactable, meshBuilder: builder, meshVisual: rmv };
+  }
+
+  private recolorDiamondHandle(
+    builder: MeshBuilder,
+    halfSizeCm: number,
+    color: RgbaColor
+  ): void {
+    const geom = LatheMeshGenerator.buildHandleDiamond(halfSizeCm, color);
+    const vCount = builder.getVerticesCount();
+    if (vCount > 0) builder.eraseVertices(0, vCount);
+    const iCount = builder.getIndicesCount();
+    if (iCount > 0) builder.eraseIndices(0, iCount);
+    builder.appendVerticesInterleaved(geom.vertices);
+    builder.appendIndices(geom.indices);
+    if (builder.isValid()) {
+      builder.updateMesh();
     }
-    if (manip) {
-      manip.setCanTranslate(true);
-      manip.setCanRotate(false);
-      manip.setCanScale(false);
+  }
+
+  private updateContactRing(
+    heightCm: number,
+    mode: HandContactMode
+  ): void {
+    if (!this.contactRingObj || mode === "NONE") return;
+
+    const h = Math.max(1.0, this.getActualHeightCm());
+    const t = Math.max(0, Math.min(1, heightCm / h));
+    const radiusCm =
+      LatheMeshGenerator.interpolateRadiusCm(this.getActualRadiiMm(), t) + 0.35;
+
+    const color =
+      mode === "INSIDE_PUSH" || mode === "TOP_OPEN"
+        ? OPTICAL_PALETTE.WARN_AMBER
+        : OPTICAL_PALETTE.CYAN;
+
+    const segments = 32;
+    const verts: number[] = [];
+    const indices: number[] = [];
+    for (let i = 0; i < segments; i++) {
+      const theta = (i / segments) * Math.PI * 2.0;
+      verts.push(
+        Math.cos(theta) * radiusCm,
+        0,
+        Math.sin(theta) * radiusCm,
+        color.r,
+        color.g,
+        color.b,
+        0.95
+      );
+      indices.push(i, (i + 1) % segments);
     }
+
+    if (!this.contactRingBuilder) {
+      this.contactRingBuilder = new MeshBuilder([
+        { name: "position", components: 3 },
+        { name: "color", components: 4 },
+      ]);
+      this.contactRingBuilder.topology = MeshTopology.Lines;
+      this.contactRingBuilder.indexType = MeshIndexType.UInt16;
+    } else {
+      const vc = this.contactRingBuilder.getVerticesCount();
+      if (vc > 0) this.contactRingBuilder.eraseVertices(0, vc);
+      const ic = this.contactRingBuilder.getIndicesCount();
+      if (ic > 0) this.contactRingBuilder.eraseIndices(0, ic);
+    }
+
+    this.contactRingBuilder.appendVerticesInterleaved(verts);
+    this.contactRingBuilder.appendIndices(indices);
+
+    if (!this.contactRingVisual) {
+      this.contactRingVisual =
+        (this.contactRingObj.getComponent(
+          "Component.RenderMeshVisual"
+        ) as RenderMeshVisual) ||
+        (this.contactRingObj.createComponent(
+          "Component.RenderMeshVisual"
+        ) as RenderMeshVisual);
+    }
+
+    if (this.contactRingBuilder.isValid()) {
+      this.contactRingVisual.mesh = this.contactRingBuilder.getMesh();
+      if (this.wireframeMaterial) {
+        this.contactRingVisual.mainMaterial = this.wireframeMaterial;
+      }
+      this.contactRingBuilder.updateMesh();
+    }
+
+    this.contactRingObj
+      .getTransform()
+      .setLocalPosition(new vec3(0, heightCm, 0));
+    this.contactRingObj.enabled = true;
+    this.contactRingFadeTimer = 0.45;
   }
 
   private buildEdgeArrowVisual(arrowObj: SceneObject): void {
@@ -381,7 +604,6 @@ export class TerraFormController extends BaseScriptComponent {
     img.clearMaterials();
     img.addMaterial(mat);
     iconSO.getTransform().setLocalScale(new vec3(2.8, 2.8, 1));
-    // Flip arrow_forward to point left toward the wheel
     iconSO
       .getTransform()
       .setLocalRotation(quat.fromEulerAngles(0, 0, Math.PI));
@@ -399,11 +621,16 @@ export class TerraFormController extends BaseScriptComponent {
     );
   }
 
-  private bindUIAndVoice(): void {
+  private bindUIHandlesAndVoice(): void {
+    // 1. Studio Card UI Buttons
     if (this.studioUI) {
       this.studioUI.onCycleShrinkage.add(() => {
         this.playUiClick();
         this.cycleShrinkagePreset();
+      });
+      this.studioUI.onCyclePreset.add(() => {
+        this.playUiClick();
+        this.cycleVesselPreset();
       });
       this.studioUI.onSavePiece.add(() => {
         this.playUiClick();
@@ -413,9 +640,188 @@ export class TerraFormController extends BaseScriptComponent {
         this.playUiClick();
         this.toggleWireframeVisibility();
       });
+      this.studioUI.onResetClay.add(() => {
+        this.playUiClick();
+        this.resetClayDeformation();
+      });
     }
 
+    // 2. All 5 Radial Zone Sculpting Handles (now coupled via ClayWheelPhysicsEngine!)
+    for (let i = 0; i < this.zoneHandles.length; i++) {
+      const slot = this.zoneHandles[i];
+      slot.interactable.onDragUpdate.add((event: DragInteractorEvent) => {
+        const dragVec = event.dragVector;
+        if (!dragVec) return;
+
+        // Horizontal X drag applies radial clay force -> couples neighbors + conserves volume!
+        const deltaMm = dragVec.x * 1.8;
+        this.clayState = ClayWheelPhysicsEngine.applyRadialForce(
+          this.wetTarget.wetRadiiMm,
+          this.clayState,
+          slot.zoneIndex,
+          deltaMm
+        );
+
+        // Vertical Y drag on Rim (or upward pull on any wall zone) pulls clay taller/shorter!
+        if (Math.abs(dragVec.y) > 0.002) {
+          const vScale = slot.zoneIndex === 4 ? 0.28 : 0.14;
+          this.clayState = ClayWheelPhysicsEngine.applyVerticalForce(
+            this.wetTarget.wetRadiiMm,
+            this.clayState,
+            dragVec.y * vScale
+          );
+        }
+
+        this.updateContactRing(
+          this.getActualHeightCm() * slot.heightFraction,
+          deltaMm >= 0 ? "INSIDE_PUSH" : "OUTSIDE_SQUEEZE"
+        );
+        this.recomputeAndRefreshVisuals();
+      });
+    }
+
+    // 3. Top Center ClayHeightHandle (volume-conserving vertical pull/compress)
+    if (this.heightHandleInteractable) {
+      this.heightHandleInteractable.onDragUpdate.add(
+        (event: DragInteractorEvent) => {
+          const dragVec = event.dragVector;
+          if (!dragVec) return;
+          this.clayState = ClayWheelPhysicsEngine.applyVerticalForce(
+            this.wetTarget.wetRadiiMm,
+            this.clayState,
+            dragVec.y * 0.3
+          );
+          this.updateContactRing(this.getActualHeightCm(), "TOP_OPEN");
+          this.recomputeAndRefreshVisuals();
+        }
+      );
+    }
+
+    // 4. Free 3D PotterHandTool — dip INSIDE from top to push outward, or squeeze from OUTSIDE!
+    if (this.potterHandToolInteractable) {
+      this.potterHandToolInteractable.onDragUpdate.add(
+        (event: DragInteractorEvent) => {
+          const dragVec = event.dragVector;
+          if (!dragVec || !this.potterHandToolObj) return;
+
+          const moveScale = 0.65;
+          const dx = dragVec.x * moveScale;
+          const dy = dragVec.y * moveScale;
+
+          const nextX = Math.max(
+            -13.5,
+            Math.min(13.5, this.potterHandToolLocalPos.x + dx)
+          );
+          const nextY = Math.max(
+            0.6,
+            Math.min(26.5, this.potterHandToolLocalPos.y + dy)
+          );
+          this.potterHandToolLocalPos = new vec3(nextX, nextY, 0.0);
+          this.potterHandToolObj
+            .getTransform()
+            .setLocalPosition(this.potterHandToolLocalPos);
+
+          const contact = ClayWheelPhysicsEngine.applyHandToolContact(
+            this.wetTarget.wetRadiiMm,
+            this.clayState,
+            { x: nextX, y: nextY, z: 0.0 },
+            { x: dx, y: dy, z: 0.0 },
+            1.4
+          );
+
+          this.updatePotterHandToolVisual(contact.mode);
+
+          if (contact.deformed) {
+            this.clayState = contact.state;
+            this.updateContactRing(contact.contactHeightCm, contact.mode);
+            this.recomputeAndRefreshVisuals();
+          } else if (contact.mode !== "NONE") {
+            this.updateContactRing(contact.contactHeightCm, contact.mode);
+          }
+        }
+      );
+
+      this.potterHandToolInteractable.onDragEnd.add(() => {
+        this.updatePotterHandToolVisual("NONE");
+      });
+    }
+
+    // 5. Hands-Free ASR Voice Commands
     this.initVoiceRecognition();
+  }
+
+  private updatePotterHandToolVisual(mode: HandContactMode): void {
+    if (this.potterHandToolBuilder) {
+      const color =
+        mode === "INSIDE_PUSH"
+          ? OPTICAL_PALETTE.WARN_AMBER
+          : mode === "OUTSIDE_SQUEEZE"
+          ? OPTICAL_PALETTE.CYAN
+          : mode === "TOP_OPEN"
+          ? OPTICAL_PALETTE.MATCH_TEAL
+          : OPTICAL_PALETTE.IVORY;
+      this.recolorDiamondHandle(this.potterHandToolBuilder, 1.35, color);
+    }
+
+    if (this.potterHandToolLabel) {
+      switch (mode) {
+        case "INSIDE_PUSH":
+          this.potterHandToolLabel.text = "INSIDE PUSH";
+          break;
+        case "OUTSIDE_SQUEEZE":
+          this.potterHandToolLabel.text = "OUTSIDE SQUEEZE";
+          break;
+        case "TOP_OPEN":
+          this.potterHandToolLabel.text = "OPEN CAVITY";
+          break;
+        default:
+          this.potterHandToolLabel.text = "Hand Tool";
+          break;
+      }
+    }
+  }
+
+  private processRealHandTracking(): void {
+    if (!this.handInputData || !this.wheelCenterAnchor) return;
+    const anchorWorld = this.wheelCenterAnchor.getTransform().getWorldPosition();
+
+    const processOneHand = (
+      handSide: "left" | "right",
+      prevLocal: vec3 | null
+    ): vec3 | null => {
+      try {
+        const hand = this.handInputData!.getHand(handSide);
+        if (!hand || !hand.isTracked()) return null;
+
+        // Midpoint of index & thumb tips gives natural potter finger-pad contact point
+        const idxPos = hand.indexTip.position;
+        const thmPos = hand.thumbTip.position;
+        const tipWorld = idxPos.add(thmPos).uniformScale(0.5);
+        const localPos = tipWorld.sub(anchorWorld);
+
+        if (prevLocal) {
+          const vel = localPos.sub(prevLocal);
+          const contact = ClayWheelPhysicsEngine.applyHandToolContact(
+            this.wetTarget.wetRadiiMm,
+            this.clayState,
+            { x: localPos.x, y: localPos.y, z: localPos.z },
+            { x: vel.x, y: vel.y, z: vel.z },
+            1.6
+          );
+          if (contact.deformed) {
+            this.clayState = contact.state;
+            this.updateContactRing(contact.contactHeightCm, contact.mode);
+            this.recomputeAndRefreshVisuals();
+          }
+        }
+        return localPos;
+      } catch (_e) {
+        return null;
+      }
+    };
+
+    this.prevLeftHandLocal = processOneHand("left", this.prevLeftHandLocal);
+    this.prevRightHandLocal = processOneHand("right", this.prevRightHandLocal);
   }
 
   private playUiClick(): void {
@@ -455,7 +861,10 @@ export class TerraFormController extends BaseScriptComponent {
 
   private stopVoiceRecognition(): void {
     try {
-      if (this.asrModule && typeof this.asrModule.stopTranscribing === "function") {
+      if (
+        this.asrModule &&
+        typeof this.asrModule.stopTranscribing === "function"
+      ) {
         this.asrModule.stopTranscribing();
       }
     } catch (_e) {
@@ -484,6 +893,15 @@ export class TerraFormController extends BaseScriptComponent {
     ) {
       this.playUiClick();
       this.setShrinkagePreset("PORCELAIN_14");
+    } else if (
+      normalized.includes("next shape") ||
+      normalized.includes("change shape")
+    ) {
+      this.playUiClick();
+      this.cycleVesselPreset();
+    } else if (normalized.includes("reset clay")) {
+      this.playUiClick();
+      this.resetClayDeformation();
     }
   }
 
@@ -493,56 +911,73 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   public setShrinkagePreset(clayType: ClayType): void {
+    const prevTargetHeight = this.wetTarget.wetHeightCm;
+    const heightDelta = this.clayState.actualHeightCm - prevTargetHeight;
     this.currentClayType = clayType;
     this.wetTarget = KilnShrinkageEngine.computeWetTarget(
-      DEFAULT_FIRED_VESSEL,
+      this.currentVesselSpec,
       this.currentClayType
     );
+    this.clayState = {
+      zoneOffsetsMm: this.clayState.zoneOffsetsMm,
+      actualHeightCm: Math.max(
+        ClayWheelPhysicsEngine.MIN_HEIGHT_CM,
+        Math.min(
+          ClayWheelPhysicsEngine.MAX_HEIGHT_CM,
+          this.wetTarget.wetHeightCm + heightDelta
+        )
+      ),
+    };
+    this.recomputeAndRefreshVisuals();
+  }
 
-    if (this.bellyHandleObj) {
-      const newBellyRadiusCm = this.wetTarget.wetRadiiMm[2] / 10.0;
-      const deltaCm =
-        this.bellyHandleObj.getTransform().getLocalPosition().x -
-        this.bellyHandleBaseLocalX;
-      this.bellyHandleBaseLocalX = newBellyRadiusCm;
-      this.bellyHandleObj
+  public cycleVesselPreset(): void {
+    this.currentPresetIndex = KilnShrinkageEngine.nextPresetIndex(
+      this.currentPresetIndex
+    );
+    this.currentVesselSpec = KilnShrinkageEngine.getPreset(
+      this.currentPresetIndex
+    );
+    this.wetTarget = KilnShrinkageEngine.computeWetTarget(
+      this.currentVesselSpec,
+      this.currentClayType
+    );
+    this.resetClayDeformation();
+  }
+
+  public resetClayDeformation(): void {
+    this.clayState = {
+      zoneOffsetsMm: [0, 0, 0, 0, 0],
+      actualHeightCm: this.wetTarget.wetHeightCm,
+    };
+    this.tealStableSeconds = 0;
+    this.chimePlayedForCurrentHold = false;
+    this.potterHandToolLocalPos = new vec3(
+      -5.2,
+      this.wetTarget.wetHeightCm + 2.4,
+      0.0
+    );
+    if (this.potterHandToolObj) {
+      this.potterHandToolObj
         .getTransform()
-        .setLocalPosition(
-          new vec3(
-            newBellyRadiusCm + deltaCm,
-            this.wetTarget.wetHeightCm * 0.5,
-            0.0
-          )
-        );
+        .setLocalPosition(this.potterHandToolLocalPos);
     }
-
+    this.updatePotterHandToolVisual("NONE");
+    if (this.contactRingObj) {
+      this.contactRingObj.enabled = false;
+    }
     this.recomputeAndRefreshVisuals();
   }
 
   public saveCurrentPieceAndAdvance(): void {
     const summary = this.evaluateCurrentProfile();
     this.seriesTracker.recordPiece(
-      summary.matchPercentage,
+      this.computeCombinedMatchPercentage(summary),
       summary.maxDeviationMm,
       this.currentClayType
     );
 
-    // Reset zone deformation handles for next piece
-    this.zoneRadiusOffsetsMm = [0, 0, 0, 0, 0];
-    this.tealStableSeconds = 0;
-    this.chimePlayedForCurrentHold = false;
-
-    if (this.bellyHandleObj) {
-      const baseRadiusCm = this.wetTarget.wetRadiiMm[2] / 10.0;
-      this.bellyHandleBaseLocalX = baseRadiusCm;
-      this.bellyHandleObj
-        .getTransform()
-        .setLocalPosition(
-          new vec3(baseRadiusCm, this.wetTarget.wetHeightCm * 0.5, 0.0)
-        );
-    }
-
-    this.recomputeAndRefreshVisuals();
+    this.resetClayDeformation();
   }
 
   public toggleWireframeVisibility(): void {
@@ -553,7 +988,8 @@ export class TerraFormController extends BaseScriptComponent {
 
   private onUpdate(dt: number): void {
     // 1. Spin wheel bat & wet clay mesh continuously
-    this.wheelSpinAngleRad = (this.wheelSpinAngleRad + dt * 1.6) % (Math.PI * 2);
+    this.wheelSpinAngleRad =
+      (this.wheelSpinAngleRad + dt * 1.6) % (Math.PI * 2);
     const spinQuat = quat.fromEulerAngles(0, this.wheelSpinAngleRad, 0);
     if (this.wheelBatObj) {
       this.wheelBatObj.getTransform().setLocalRotation(spinQuat);
@@ -562,22 +998,21 @@ export class TerraFormController extends BaseScriptComponent {
       this.spinningClayObj.getTransform().setLocalRotation(spinQuat);
     }
 
-    // 2. Track ClayZoneHandle_Belly drag offset in cm -> mm
-    if (this.bellyHandleObj) {
-      const currentLocalX = this.bellyHandleObj
-        .getTransform()
-        .getLocalPosition().x;
-      const deltaCm = currentLocalX - this.bellyHandleBaseLocalX;
-      const deltaMm = Math.round(deltaCm * 10.0 * 100) / 100;
-      if (Math.abs(deltaMm - this.zoneRadiusOffsetsMm[2]) > 0.05) {
-        this.zoneRadiusOffsetsMm[2] = deltaMm;
-        this.recomputeAndRefreshVisuals();
+    // 2. Real SPECS bare-hand sculpting (inside push & outside squeeze)
+    this.processRealHandTracking();
+
+    // 3. Auto-hide SculptContactRing briefly after hand leaves clay
+    if (this.contactRingFadeTimer > 0) {
+      this.contactRingFadeTimer -= dt;
+      if (this.contactRingFadeTimer <= 0 && this.contactRingObj) {
+        this.contactRingObj.enabled = false;
       }
     }
 
-    // 3. Stability chime timer: play once after 2.0s continuous MATCH_TEAL across all 5 zones
+    // 4. Stability chime timer: play once after 2.0s continuous MATCH_TEAL across all 5 zones + height
     const summary = this.evaluateCurrentProfile();
-    if (summary.allZonesStable) {
+    const heightStable = this.getHeightToleranceStatus() === "MATCH_TEAL";
+    if (summary.allZonesStable && heightStable) {
       this.tealStableSeconds += dt;
       if (this.tealStableSeconds >= 2.0 && !this.chimePlayedForCurrentHold) {
         this.chimePlayedForCurrentHold = true;
@@ -590,7 +1025,7 @@ export class TerraFormController extends BaseScriptComponent {
       this.chimePlayedForCurrentHold = false;
     }
 
-    // 4. Off-Screen Navigation check (DC-5: > 16.0 deg horizontal yaw away from WheelCenterAnchor)
+    // 5. Off-Screen Navigation check (DC-5: > 16.0 deg horizontal yaw away from WheelCenterAnchor)
     this.updateOffscreenGuidance();
   }
 
@@ -601,7 +1036,7 @@ export class TerraFormController extends BaseScriptComponent {
 
     const camTransform = this.mainCameraObj.getTransform();
     const camPos = camTransform.getWorldPosition();
-    const camBack = camTransform.back; // In Lens Studio, camera looks down local -Z (transform.back)
+    const camBack = camTransform.back;
     const anchorPos = this.wheelCenterAnchor.getTransform().getWorldPosition();
 
     const evalResult = FovNavigationMath.evaluateGazeOffset(
@@ -624,9 +1059,23 @@ export class TerraFormController extends BaseScriptComponent {
     );
   }
 
+  private computeCombinedMatchPercentage(
+    summary: ProfileEvaluationSummary
+  ): number {
+    const heightStatus = this.getHeightToleranceStatus();
+    if (heightStatus === "MATCH_TEAL") {
+      return summary.matchPercentage;
+    }
+    const heightPenalty = heightStatus === "WARN_AMBER" ? 6 : 14;
+    return Math.max(0, summary.matchPercentage - heightPenalty);
+  }
+
   private getActualRadiiMm(): number[] {
-    return this.wetTarget.wetRadiiMm.map(
-      (targetR, idx) => targetR + this.zoneRadiusOffsetsMm[idx]
+    return this.wetTarget.wetRadiiMm.map((targetR, idx) =>
+      Math.max(
+        ClayWheelPhysicsEngine.MIN_RADIUS_MM,
+        targetR + this.clayState.zoneOffsetsMm[idx]
+      )
     );
   }
 
@@ -634,13 +1083,62 @@ export class TerraFormController extends BaseScriptComponent {
     const summary = this.evaluateCurrentProfile();
     const bellyStatus = summary.zones[2].status;
     const zoneStatuses = summary.zones.map((z) => z.status);
+    const actualHeightCm = this.getActualHeightCm();
+    const heightStatus = this.getHeightToleranceStatus();
+    const combinedMatch = this.computeCombinedMatchPercentage(summary);
 
-    // Update CaliperGaugeLine height text
+    // Update CaliperGaugeLine height texts
     if (this.targetHeightText) {
       this.targetHeightText.text = KilnShrinkageEngine.formatHeightCm(
         this.wetTarget.wetHeightCm,
         2
       );
+    }
+
+    if (this.actualHeightText) {
+      const hDiff = actualHeightCm - this.wetTarget.wetHeightCm;
+      const diffSuffix =
+        Math.abs(hDiff) > 0.05
+          ? ` (${hDiff >= 0 ? "+" : ""}${hDiff.toFixed(1)})`
+          : "";
+      this.actualHeightText.text = `Clay: ${actualHeightCm.toFixed(2)} cm${diffSuffix}`;
+      if (this.actualHeightText.textFill) {
+        this.actualHeightText.textFill.color =
+          this.statusToVec4(heightStatus);
+      }
+    }
+
+    // Reposition & recolor all 5 radial zone handles along the live clay silhouette
+    const actualRadiiMm = this.getActualRadiiMm();
+    for (let i = 0; i < this.zoneHandles.length; i++) {
+      const slot = this.zoneHandles[i];
+      const radiusCm = actualRadiiMm[i] / 10.0;
+      slot.sceneObject
+        .getTransform()
+        .setLocalPosition(
+          new vec3(radiusCm + 0.9, actualHeightCm * slot.heightFraction, 1.8)
+        );
+      const handleColor = LatheMeshGenerator.colorForToleranceStatus(
+        zoneStatuses[i],
+        OPTICAL_PALETTE.MATCH_TEAL
+      );
+      this.recolorDiamondHandle(
+        slot.meshBuilder,
+        i === 2 ? 1.05 : 0.8,
+        handleColor
+      );
+    }
+
+    // Reposition & recolor top ClayHeightHandle above the live rim
+    if (this.heightHandleObj && this.heightHandleBuilder) {
+      this.heightHandleObj
+        .getTransform()
+        .setLocalPosition(new vec3(0.0, actualHeightCm + 1.5, 0.0));
+      const heightColor =
+        heightStatus === "MATCH_TEAL"
+          ? OPTICAL_PALETTE.CYAN
+          : LatheMeshGenerator.colorForToleranceStatus(heightStatus);
+      this.recolorDiamondHandle(this.heightHandleBuilder, 1.1, heightColor);
     }
 
     // Update UIKit Studio Card HUD
@@ -649,13 +1147,26 @@ export class TerraFormController extends BaseScriptComponent {
         KilnShrinkageEngine.getDisplayLabel(this.currentClayType),
         this.seriesTracker.getCounterLabel(),
         bellyStatus,
-        summary.matchPercentage
+        combinedMatch,
+        this.currentVesselSpec.presetName
       );
     }
 
     this.rebuildGhostWireframeMesh(bellyStatus, zoneStatuses);
-    this.rebuildCaliperGaugeMesh();
-    this.rebuildSpinningClayMesh();
+    this.rebuildCaliperGaugeMesh(actualHeightCm, heightStatus);
+    this.rebuildSpinningClayMesh(actualHeightCm);
+  }
+
+  private statusToVec4(status: ToleranceStatus): vec4 {
+    switch (status) {
+      case "MATCH_TEAL":
+        return new vec4(0.18, 0.9, 0.62, 1.0);
+      case "WARN_AMBER":
+        return new vec4(1.0, 0.78, 0.34, 1.0);
+      case "OVER_CORAL":
+      case "UNDER_CORAL":
+        return new vec4(1.0, 0.42, 0.42, 1.0);
+    }
   }
 
   private rebuildGhostWireframeMesh(
@@ -720,11 +1231,20 @@ export class TerraFormController extends BaseScriptComponent {
     }
   }
 
-  private rebuildCaliperGaugeMesh(): void {
+  private rebuildCaliperGaugeMesh(
+    actualHeightCm: number,
+    heightStatus: ToleranceStatus
+  ): void {
     if (!this.caliperGaugeLineObj) return;
+    const actualColor = LatheMeshGenerator.colorForToleranceStatus(
+      heightStatus,
+      OPTICAL_PALETTE.MATCH_TEAL
+    );
     const geom = LatheMeshGenerator.buildCaliperGauge(
       this.wetTarget.wetHeightCm,
-      OPTICAL_PALETTE.CYAN
+      OPTICAL_PALETTE.CYAN,
+      actualHeightCm,
+      actualColor
     );
 
     if (!this.caliperMeshBuilder) {
@@ -763,7 +1283,7 @@ export class TerraFormController extends BaseScriptComponent {
     }
   }
 
-  private rebuildSpinningClayMesh(): void {
+  private rebuildSpinningClayMesh(actualHeightCm: number): void {
     if (!this.spinningClayObj) return;
     const clayColor =
       this.currentClayType === "PORCELAIN_14"
@@ -771,7 +1291,7 @@ export class TerraFormController extends BaseScriptComponent {
         : OPTICAL_PALETTE.CLAY_STONEWARE;
 
     const geom = LatheMeshGenerator.buildSolidVessel(
-      this.wetTarget.wetHeightCm,
+      actualHeightCm,
       this.getActualRadiiMm(),
       clayColor
     );

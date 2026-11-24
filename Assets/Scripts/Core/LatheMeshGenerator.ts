@@ -48,22 +48,40 @@ export class LatheMeshGenerator {
   public static readonly DEFAULT_RING_COUNT = 6;
 
   /**
-   * Interpolates radius in cm at normalized height t in [0, 1] across the 5 zones.
+   * Smoothly interpolates radius in cm at normalized height t in [0, 1] across the 5 zones
+   * using Catmull-Rom spline interpolation for organic pottery silhouettes.
    */
   public static interpolateRadiusCm(
     zoneRadiiMm: readonly number[],
     t: number
   ): number {
     if (zoneRadiiMm.length === 0) return 5.0;
+    if (zoneRadiiMm.length === 1) return zoneRadiiMm[0] / 10.0;
     const clampedT = Math.max(0, Math.min(1, t));
     const maxIndex = zoneRadiiMm.length - 1;
     const scaled = clampedT * maxIndex;
-    const lowIdx = Math.floor(scaled);
-    const highIdx = Math.min(maxIndex, lowIdx + 1);
-    const frac = scaled - lowIdx;
+    const i1 = Math.min(maxIndex - 1, Math.floor(scaled));
+    const i2 = i1 + 1;
+    const i0 = Math.max(0, i1 - 1);
+    const i3 = Math.min(maxIndex, i2 + 1);
+    const u = scaled - i1;
+
+    const p0 = zoneRadiiMm[i0];
+    const p1 = zoneRadiiMm[i1];
+    const p2 = zoneRadiiMm[i2];
+    const p3 = zoneRadiiMm[i3];
+
+    // Catmull-Rom cubic interpolation (clamped to avoid negative radii)
+    const u2 = u * u;
+    const u3 = u2 * u;
     const radiusMm =
-      zoneRadiiMm[lowIdx] * (1 - frac) + zoneRadiiMm[highIdx] * frac;
-    return radiusMm / 10.0; // convert mm to cm
+      0.5 *
+      (2 * p1 +
+        (-p0 + p2) * u +
+        (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 +
+        (-p0 + 3 * p1 - 3 * p2 + p3) * u3);
+
+    return Math.max(1.0, radiusMm / 10.0); // convert mm to cm
   }
 
   public static colorForToleranceStatus(
@@ -154,12 +172,14 @@ export class LatheMeshGenerator {
   }
 
   /**
-   * Builds a vertical CaliperGaugeLine with top/bottom caliper arms and 5 zone tick marks
-   * in interleaved [x, y, z, r, g, b, a] format for MeshTopology.Lines.
+   * Builds a vertical CaliperGaugeLine with top/bottom target caliper arms, 5 zone ticks,
+   * and an optional live actual-height marker bar.
    */
   public static buildCaliperGauge(
     wetHeightCm: number,
-    color: RgbaColor = OPTICAL_PALETTE.CYAN
+    color: RgbaColor = OPTICAL_PALETTE.CYAN,
+    actualHeightCm?: number,
+    actualColor: RgbaColor = OPTICAL_PALETTE.MATCH_TEAL
   ): LatheWireframeGeometry {
     const vertices: number[] = [];
     const indices: number[] = [];
@@ -170,23 +190,37 @@ export class LatheMeshGenerator {
       z0: number,
       x1: number,
       y1: number,
-      z1: number
+      z1: number,
+      lineColor: RgbaColor = color
     ) => {
       const base = vertices.length / 7;
-      vertices.push(x0, y0, z0, color.r, color.g, color.b, color.a);
-      vertices.push(x1, y1, z1, color.r, color.g, color.b, color.a);
+      vertices.push(x0, y0, z0, lineColor.r, lineColor.g, lineColor.b, lineColor.a);
+      vertices.push(x1, y1, z1, lineColor.r, lineColor.g, lineColor.b, lineColor.a);
       indices.push(base, base + 1);
     };
 
+    const maxH =
+      actualHeightCm !== undefined
+        ? Math.max(wetHeightCm, actualHeightCm)
+        : wetHeightCm;
+
     // Main vertical spine
-    pushLine(0, 0, 0, 0, wetHeightCm, 0);
-    // Top & bottom horizontal caliper arms extending right toward the vessel
+    pushLine(0, 0, 0, 0, maxH, 0);
+    // Top & bottom target horizontal caliper arms extending right toward the vessel
     pushLine(-0.8, 0, 0, 1.8, 0, 0);
     pushLine(-0.8, wetHeightCm, 0, 1.8, wetHeightCm, 0);
-    // 5 zone tick marks along the vertical spine
+    // 5 zone tick marks along the target height spine
     for (let i = 1; i < 4; i++) {
       const y = (i / 4) * wetHeightCm;
       pushLine(-0.5, y, 0, 1.0, y, 0);
+    }
+
+    // Live actual-height caliper pointer when clay height differs from target
+    if (
+      actualHeightCm !== undefined &&
+      Math.abs(actualHeightCm - wetHeightCm) > 0.05
+    ) {
+      pushLine(-1.2, actualHeightCm, 0, 2.4, actualHeightCm, 0, actualColor);
     }
 
     return {
@@ -198,34 +232,34 @@ export class LatheMeshGenerator {
   }
 
   /**
-   * Builds a CCW-wound solid rotational clay vessel (MeshTopology.Triangles)
-   * with interleaved [x, y, z, nx, ny, nz, r, g, b, a] vertices (stride = 10).
+   * Builds a CCW-wound solid hollow-rim rotational clay vessel (MeshTopology.Triangles)
+   * with smooth Catmull-Rom profile and interleaved [x, y, z, nx, ny, nz, r, g, b, a] vertices.
    */
   public static buildSolidVessel(
-    wetHeightCm: number,
+    actualHeightCm: number,
     actualRadiiMm: readonly number[],
     baseColor: RgbaColor = OPTICAL_PALETTE.CLAY_STONEWARE,
-    radialSegments: number = 28,
-    heightRings: number = 12
+    radialSegments: number = 32,
+    heightRings: number = 20
   ): SolidMeshGeometry {
     const vertices: number[] = [];
     const indices: number[] = [];
 
-    // Outer wall rings (slightly inset by 0.12 cm so 1:1 wireframe hugs outside cleanly)
     const wallInsetCm = 0.12;
     const cols = radialSegments + 1;
 
+    // Outer wall rings
     for (let r = 0; r <= heightRings; r++) {
       const t = r / heightRings;
-      const y = t * wetHeightCm;
+      const y = t * actualHeightCm;
       const rad = Math.max(
-        0.5,
+        0.8,
         this.interpolateRadiusCm(actualRadiiMm, t) - wallInsetCm
       );
 
-      // Subtle vertical shading gradient + throwing grooves for clay realism
-      const groove = 1.0 + 0.04 * Math.sin(t * Math.PI * 16.0);
-      const shade = (0.78 + 0.22 * t) * groove;
+      // Subtle throwing grooves for wet clay wheel realism
+      const groove = 1.0 + 0.035 * Math.sin(t * Math.PI * 22.0);
+      const shade = (0.76 + 0.24 * t) * groove;
 
       for (let c = 0; c <= radialSegments; c++) {
         const theta = (c / radialSegments) * Math.PI * 2.0;
@@ -234,8 +268,8 @@ export class LatheMeshGenerator {
         const x = cosT * rad;
         const z = sinT * rad;
 
-        // Simple directional highlight baked gently into vertex color for unlit vertex shader
-        const lightFactor = 0.72 + 0.28 * Math.max(0, cosT * 0.6 + sinT * 0.4 + 0.4);
+        const lightFactor =
+          0.72 + 0.28 * Math.max(0, cosT * 0.6 + sinT * 0.4 + 0.4);
         const f = shade * lightFactor;
 
         vertices.push(
@@ -243,7 +277,7 @@ export class LatheMeshGenerator {
           y,
           z,
           cosT,
-          0.15,
+          0.12,
           sinT,
           Math.min(1, baseColor.r * f),
           Math.min(1, baseColor.g * f),
@@ -253,23 +287,85 @@ export class LatheMeshGenerator {
       }
     }
 
-    // CCW winding when viewed from outside (+X cross +Y = +Z):
-    // theta increases from +X toward +Z (clockwise from top +Y), so along increasing theta we go RIGHT-to-LEFT on front (+Z).
-    // Verify cross product at theta=0 (x=R, z=0), normal=(+1,0,0):
-    // v0=(R, y0, 0), v1=(R, y1, 0) [up], v2=(R*cos, y0, R*sin) [+Z]
-    // (v1-v0) x (v2-v0) = (0, +dy, 0) x (0, 0, +dz) = (+dy*dz, 0, 0) -> points OUTWARD (+X)!
     for (let r = 0; r < heightRings; r++) {
       for (let c = 0; c < radialSegments; c++) {
         const bl = r * cols + c;
         const tl = (r + 1) * cols + c;
         const br = r * cols + (c + 1);
         const tr = (r + 1) * cols + (c + 1);
-
-        // Triangle 1: bl -> tl -> br (cross = up x +theta = outward!)
         indices.push(bl, tl, br);
-        // Triangle 2: tl -> tr -> br
         indices.push(tl, tr, br);
       }
+    }
+
+    // Hollow rim lip + dark recessed inner wall for authentic pottery vessel look
+    const rimOuterRad = Math.max(
+      0.8,
+      this.interpolateRadiusCm(actualRadiiMm, 1.0) - wallInsetCm
+    );
+    const rimInnerRad = Math.max(0.4, rimOuterRad - 0.65);
+    const innerDepthY = Math.max(0.5, actualHeightCm * 0.25);
+
+    const lipStart = vertices.length / 10;
+    for (let c = 0; c <= radialSegments; c++) {
+      const theta = (c / radialSegments) * Math.PI * 2.0;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      // Outer rim top
+      vertices.push(
+        cosT * rimOuterRad,
+        actualHeightCm,
+        sinT * rimOuterRad,
+        0,
+        1,
+        0,
+        Math.min(1, baseColor.r * 1.05),
+        Math.min(1, baseColor.g * 1.05),
+        Math.min(1, baseColor.b * 1.05),
+        1.0
+      );
+      // Inner rim top
+      vertices.push(
+        cosT * rimInnerRad,
+        actualHeightCm,
+        sinT * rimInnerRad,
+        0,
+        1,
+        0,
+        baseColor.r * 0.72,
+        baseColor.g * 0.72,
+        baseColor.b * 0.72,
+        1.0
+      );
+      // Inner cavity floor edge
+      vertices.push(
+        cosT * (rimInnerRad * 0.78),
+        innerDepthY,
+        sinT * (rimInnerRad * 0.78),
+        -cosT,
+        0.2,
+        -sinT,
+        baseColor.r * 0.42,
+        baseColor.g * 0.42,
+        baseColor.b * 0.42,
+        1.0
+      );
+    }
+
+    for (let c = 0; c < radialSegments; c++) {
+      const o0 = lipStart + c * 3;
+      const i0 = o0 + 1;
+      const b0 = o0 + 2;
+      const o1 = lipStart + (c + 1) * 3;
+      const i1 = o1 + 1;
+      const b1 = o1 + 2;
+
+      // Top rim ring (facing +Y)
+      indices.push(o0, i1, i0);
+      indices.push(o0, o1, i1);
+      // Inner cavity wall (facing inward)
+      indices.push(i0, i1, b0);
+      indices.push(i1, b1, b0);
     }
 
     return {
@@ -278,6 +374,45 @@ export class LatheMeshGenerator {
       vertexCount: vertices.length / 10,
       triangleCount: indices.length / 3,
     };
+  }
+
+  /**
+   * Builds a compact glowing octahedron handle mesh for sculpting handles
+   * in interleaved [x, y, z, r, g, b, a] format (MeshTopology.Triangles).
+   */
+  public static buildHandleDiamond(
+    halfSizeCm: number,
+    color: RgbaColor
+  ): { vertices: number[]; indices: number[] } {
+    const h = halfSizeCm;
+    const hi = {
+      r: Math.min(1, color.r * 1.1),
+      g: Math.min(1, color.g * 1.1),
+      b: Math.min(1, color.b * 1.1),
+      a: 0.95,
+    };
+    const lo = {
+      r: color.r * 0.78,
+      g: color.g * 0.78,
+      b: color.b * 0.78,
+      a: 0.95,
+    };
+
+    const vertices: number[] = [
+      // Top 4 faces (CCW outward)
+      0, h, 0, hi.r, hi.g, hi.b, hi.a,  0, 0, h, lo.r, lo.g, lo.b, lo.a,   h, 0, 0, lo.r, lo.g, lo.b, lo.a,
+      0, h, 0, hi.r, hi.g, hi.b, hi.a,  h, 0, 0, lo.r, lo.g, lo.b, lo.a,   0, 0, -h, lo.r, lo.g, lo.b, lo.a,
+      0, h, 0, hi.r, hi.g, hi.b, hi.a,  0, 0, -h, lo.r, lo.g, lo.b, lo.a,  -h, 0, 0, lo.r, lo.g, lo.b, lo.a,
+      0, h, 0, hi.r, hi.g, hi.b, hi.a,  -h, 0, 0, lo.r, lo.g, lo.b, lo.a,  0, 0, h, lo.r, lo.g, lo.b, lo.a,
+      // Bottom 4 faces (CCW outward)
+      0, -h, 0, lo.r, lo.g, lo.b, lo.a, h, 0, 0, hi.r, hi.g, hi.b, hi.a,   0, 0, h, hi.r, hi.g, hi.b, hi.a,
+      0, -h, 0, lo.r, lo.g, lo.b, lo.a, 0, 0, -h, hi.r, hi.g, hi.b, hi.a,  h, 0, 0, hi.r, hi.g, hi.b, hi.a,
+      0, -h, 0, lo.r, lo.g, lo.b, lo.a, -h, 0, 0, hi.r, hi.g, hi.b, hi.a,  0, 0, -h, hi.r, hi.g, hi.b, hi.a,
+      0, -h, 0, lo.r, lo.g, lo.b, lo.a, 0, 0, h, hi.r, hi.g, hi.b, hi.a,   -h, 0, 0, hi.r, hi.g, hi.b, hi.a,
+    ];
+    const indices: number[] = [];
+    for (let i = 0; i < 24; i++) indices.push(i);
+    return { vertices, indices };
   }
 
   /**

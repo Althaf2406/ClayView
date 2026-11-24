@@ -16,6 +16,9 @@ import {
 import {
   LatheMeshGenerator,
 } from "../Assets/Scripts/Core/LatheMeshGenerator";
+import {
+  ClayWheelPhysicsEngine,
+} from "../Assets/Scripts/Core/ClayWheelPhysicsEngine";
 
 describe("ClayView - Pure TypeScript Core Engine", () => {
   describe("KilnShrinkageEngine", () => {
@@ -60,6 +63,16 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       assert.equal(KilnShrinkageEngine.nextClayType("LOW_FIRE_10"), "STONEWARE_12");
       assert.equal(KilnShrinkageEngine.nextClayType("STONEWARE_12"), "PORCELAIN_14");
       assert.equal(KilnShrinkageEngine.nextClayType("PORCELAIN_14"), "STONEWARE_0");
+    });
+
+    test("cycles through all 4 ceramic vessel presets", () => {
+      assert.equal(KilnShrinkageEngine.getPresetCount(), 4);
+      assert.equal(KilnShrinkageEngine.getPreset(0).presetName, "Cylinder Vase");
+      assert.equal(KilnShrinkageEngine.getPreset(0).firedHeightCm, 16.0);
+      assert.equal(KilnShrinkageEngine.getPreset(1).presetName, "Tea Bowl");
+      assert.equal(KilnShrinkageEngine.getPreset(2).presetName, "Amphora");
+      assert.equal(KilnShrinkageEngine.getPreset(3).presetName, "Studio Mug");
+      assert.equal(KilnShrinkageEngine.nextPresetIndex(3), 0);
     });
 
     test("rejects negative dimensions and invalid rates", () => {
@@ -212,6 +225,96 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       const bat = LatheMeshGenerator.buildWheelBat(12.0, 1.2, 32);
       assert.equal(bat.triangleCount, 32 + 64);
       assert.equal(bat.vertices.length, bat.vertexCount * 10);
+    });
+  });
+
+  describe("ClayWheelPhysicsEngine", () => {
+    const targetRadiiMm = [45.45, 70.45, 85.23, 77.27, 85.23];
+
+    test("conserves clay volume: squeezing inward raises height & couples neighbors", () => {
+      const initial = {
+        zoneOffsetsMm: [0, 0, 0, 0, 0] as [number, number, number, number, number],
+        actualHeightCm: 18.18,
+      };
+
+      // Squeeze belly inward by -12 mm
+      const squeezed = ClayWheelPhysicsEngine.applyRadialForce(
+        targetRadiiMm,
+        initial,
+        2,
+        -12.0
+      );
+
+      // Belly narrows, neighbors (LowerBelly & Shoulder) couple inward smoothly
+      assert.equal(squeezed.zoneOffsetsMm[2], -12.0);
+      assert.equal(squeezed.zoneOffsetsMm[1] < 0, true);
+      assert.equal(squeezed.zoneOffsetsMm[3] < 0, true);
+      // Displaced clay forces vessel TALLER!
+      assert.equal(squeezed.actualHeightCm > initial.actualHeightCm, true);
+    });
+
+    test("conserves clay volume: widening outward settles height lower", () => {
+      const initial = {
+        zoneOffsetsMm: [0, 0, 0, 0, 0] as [number, number, number, number, number],
+        actualHeightCm: 18.18,
+      };
+
+      const widened = ClayWheelPhysicsEngine.applyRadialForce(
+        targetRadiiMm,
+        initial,
+        2,
+        12.0
+      );
+
+      assert.equal(widened.zoneOffsetsMm[2], 12.0);
+      assert.equal(widened.zoneOffsetsMm[1] > 0, true);
+      assert.equal(widened.actualHeightCm < initial.actualHeightCm, true);
+    });
+
+    test("pulling height upward draws walls gently inward", () => {
+      const initial = {
+        zoneOffsetsMm: [0, 0, 0, 0, 0] as [number, number, number, number, number],
+        actualHeightCm: 18.18,
+      };
+
+      const pulled = ClayWheelPhysicsEngine.applyVerticalForce(
+        targetRadiiMm,
+        initial,
+        3.5
+      );
+
+      assert.equal(pulled.actualHeightCm > 21.0, true);
+      assert.equal(pulled.zoneOffsetsMm[2] < 0, true);
+    });
+
+    test("hand entering from top inside pushes wall outward; outside hand squeezes inward", () => {
+      const initial = {
+        zoneOffsetsMm: [0, 0, 0, 0, 0] as [number, number, number, number, number],
+        actualHeightCm: 18.18,
+      };
+
+      // Hand inside belly cavity (r = 7.4 cm < wall 8.52 cm) pushing outward (+X)
+      const insideRes = ClayWheelPhysicsEngine.applyHandToolContact(
+        targetRadiiMm,
+        initial,
+        { x: 7.4, y: 9.0, z: 0 },
+        { x: 0.4, y: 0, z: 0 }
+      );
+      assert.equal(insideRes.mode, "INSIDE_PUSH");
+      assert.equal(insideRes.deformed, true);
+      assert.equal(insideRes.state.zoneOffsetsMm[2] > 0, true);
+
+      // Hand outside belly wall (r = 9.0 cm > wall 8.52 cm) squeezing inward (-X)
+      const outsideRes = ClayWheelPhysicsEngine.applyHandToolContact(
+        targetRadiiMm,
+        initial,
+        { x: 9.0, y: 9.0, z: 0 },
+        { x: -0.4, y: 0.1, z: 0 }
+      );
+      assert.equal(outsideRes.mode, "OUTSIDE_SQUEEZE");
+      assert.equal(outsideRes.deformed, true);
+      assert.equal(outsideRes.state.zoneOffsetsMm[2] < 0, true);
+      assert.equal(outsideRes.state.actualHeightCm > initial.actualHeightCm, true);
     });
   });
 });
