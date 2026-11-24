@@ -78,3 +78,6 @@ Thumbs.db
 Desktop.ini
 .env
 .env.*
+
+# Added by Lens Studio (LEAF plugin)
+leaf_plugin_settings.json
