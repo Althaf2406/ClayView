@@ -65,7 +65,8 @@ export class ClayWheelPhysicsEngine {
     targetRadiiMm: readonly number[],
     currentState: ClayDeformationState,
     zoneIndex: number,
-    deltaMm: number
+    deltaMm: number,
+    maxHeightCm: number = ClayWheelPhysicsEngine.MAX_HEIGHT_CM
   ): ClayDeformationState {
     if (Math.abs(deltaMm) < 1e-4) return currentState;
 
@@ -106,13 +107,14 @@ export class ClayWheelPhysicsEngine {
     const newArea = this.computeCrossSectionAreaProxy(newRadiiMm);
 
     // Volume conservation: squeezing inward (newArea < oldArea) pushes clay UPWARD!
+    const effectiveMaxH = Math.max(this.MIN_HEIGHT_CM, Math.min(this.MAX_HEIGHT_CM, maxHeightCm));
     let nextHeight = currentState.actualHeightCm;
     if (oldArea > 1e-4 && newArea > 1e-4) {
       const areaRatio = oldArea / newArea;
       const heightFactor = Math.pow(areaRatio, this.VOLUME_HEIGHT_COUPLING);
       nextHeight = Math.max(
         this.MIN_HEIGHT_CM,
-        Math.min(this.MAX_HEIGHT_CM, currentState.actualHeightCm * heightFactor)
+        Math.min(effectiveMaxH, currentState.actualHeightCm * heightFactor)
       );
       nextHeight = Math.round(nextHeight * 100) / 100;
     }
@@ -130,15 +132,17 @@ export class ClayWheelPhysicsEngine {
   public static applyVerticalForce(
     targetRadiiMm: readonly number[],
     currentState: ClayDeformationState,
-    deltaHeightCm: number
+    deltaHeightCm: number,
+    maxHeightCm: number = ClayWheelPhysicsEngine.MAX_HEIGHT_CM
   ): ClayDeformationState {
     if (Math.abs(deltaHeightCm) < 1e-4) return currentState;
 
+    const effectiveMaxH = Math.max(this.MIN_HEIGHT_CM, Math.min(this.MAX_HEIGHT_CM, maxHeightCm));
     const oldHeight = currentState.actualHeightCm;
     const nextHeight = Math.round(
       Math.max(
         this.MIN_HEIGHT_CM,
-        Math.min(this.MAX_HEIGHT_CM, oldHeight + deltaHeightCm)
+        Math.min(effectiveMaxH, oldHeight + deltaHeightCm)
       ) * 100
     ) / 100;
 
@@ -194,7 +198,8 @@ export class ClayWheelPhysicsEngine {
     currentState: ClayDeformationState,
     localPosCm: { readonly x: number; readonly y: number; readonly z: number },
     localVelCm: { readonly x: number; readonly y: number; readonly z: number },
-    toolRadiusCm: number = 1.4
+    toolRadiusCm: number = 1.4,
+    maxHeightCm: number = ClayWheelPhysicsEngine.MAX_HEIGHT_CM
   ): HandContactResult {
     const h = currentState.actualHeightCm;
 
@@ -254,13 +259,15 @@ export class ClayWheelPhysicsEngine {
       nextState = this.applyVerticalForce(
         targetRadiiMm,
         nextState,
-        localVelCm.y * 0.45
+        localVelCm.y * 0.45,
+        maxHeightCm
       );
       nextState = this.applyRadialForce(
         targetRadiiMm,
         nextState,
         4,
-        Math.abs(localVelCm.y) * 5.0
+        Math.abs(localVelCm.y) * 5.0,
+        maxHeightCm
       );
       deformed = true;
     }
@@ -279,7 +286,8 @@ export class ClayWheelPhysicsEngine {
             targetRadiiMm,
             nextState,
             closestZone,
-            pushMm
+            pushMm,
+            maxHeightCm
           );
           deformed = true;
         }
@@ -288,7 +296,8 @@ export class ClayWheelPhysicsEngine {
           nextState = this.applyVerticalForce(
             targetRadiiMm,
             nextState,
-            localVelCm.y * 0.55
+            localVelCm.y * 0.55,
+            maxHeightCm
           );
           deformed = true;
         }
@@ -317,7 +326,8 @@ export class ClayWheelPhysicsEngine {
               targetRadiiMm,
               nextState,
               closestZone,
-              -squeezeMm
+              -squeezeMm,
+              maxHeightCm
             );
             deformed = true;
           }
@@ -327,7 +337,8 @@ export class ClayWheelPhysicsEngine {
           nextState = this.applyVerticalForce(
             targetRadiiMm,
             nextState,
-            localVelCm.y * 0.65
+            localVelCm.y * 0.65,
+            maxHeightCm
           );
           deformed = true;
         }

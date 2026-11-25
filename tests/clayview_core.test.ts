@@ -370,5 +370,37 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       assert.equal(Math.round(sideBasis.rightZ), -1);
       assert.equal(Math.abs(sideBasis.yawRad - Math.PI / 2) < 0.01, true);
     });
+
+    test("enforces clay mass physical max height limit and builds 3D clay stock pile", () => {
+      const smallPreset = ClayStudioFlowEngine.getMassPreset("SMALL_450G");
+      const largePreset = ClayStudioFlowEngine.getMassPreset("LARGE_1500G");
+      assert.equal(smallPreset.maxHeightCm < largePreset.maxHeightCm, true);
+
+      const smallGlobe = ClayStudioFlowEngine.buildGlobePieceState(
+        targetRadiiMm,
+        "SMALL_450G"
+      );
+      const pulledSmall = ClayWheelPhysicsEngine.applyVerticalForce(
+        targetRadiiMm,
+        smallGlobe,
+        20.0,
+        smallPreset.maxHeightCm
+      );
+      assert.equal(pulledSmall.actualHeightCm, smallPreset.maxHeightCm);
+
+      const emptyStock = LatheMeshGenerator.buildClayStockPile(0, 1.9);
+      assert.equal(emptyStock.triangleCount, 0);
+
+      const fiveBalls = LatheMeshGenerator.buildClayStockPile(
+        5,
+        smallPreset.stockBallRadiusCm
+      );
+      const elevenBalls = LatheMeshGenerator.buildClayStockPile(
+        11,
+        largePreset.stockBallRadiusCm
+      );
+      assert.equal(fiveBalls.triangleCount > 0, true);
+      assert.equal(elevenBalls.triangleCount > fiveBalls.triangleCount, true);
+    });
   });
 });

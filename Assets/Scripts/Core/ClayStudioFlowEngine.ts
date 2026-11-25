@@ -11,6 +11,10 @@ export interface ClayMassPreset {
   /** Scale multiplier applied to the initial raw Globe Piece mound */
   readonly globeRadiusScale: number;
   readonly globeHeightCm: number;
+  /** Physical maximum throwable vessel height in cm for this clay weight */
+  readonly maxHeightCm: number;
+  /** Radius in cm for each reserve wedged clay ball in the table stock pile */
+  readonly stockBallRadiusCm: number;
 }
 
 export const CLAY_MASS_PRESETS: Record<ClayMassId, ClayMassPreset> = {
@@ -18,8 +22,10 @@ export const CLAY_MASS_PRESETS: Record<ClayMassId, ClayMassPreset> = {
     id: "SMALL_450G",
     grams: 450,
     displayLabel: "450g Small",
-    globeRadiusScale: 0.84,
-    globeHeightCm: 8.2,
+    globeRadiusScale: 0.72,
+    globeHeightCm: 6.5,
+    maxHeightCm: 15.5,
+    stockBallRadiusCm: 1.45,
   },
   MEDIUM_900G: {
     id: "MEDIUM_900G",
@@ -27,13 +33,17 @@ export const CLAY_MASS_PRESETS: Record<ClayMassId, ClayMassPreset> = {
     displayLabel: "900g Medium",
     globeRadiusScale: 1.0,
     globeHeightCm: 10.4,
+    maxHeightCm: 21.5,
+    stockBallRadiusCm: 1.9,
   },
   LARGE_1500G: {
     id: "LARGE_1500G",
     grams: 1500,
     displayLabel: "1.5kg Large",
-    globeRadiusScale: 1.14,
-    globeHeightCm: 12.6,
+    globeRadiusScale: 1.24,
+    globeHeightCm: 14.5,
+    maxHeightCm: 26.0,
+    stockBallRadiusCm: 2.3,
   },
 };
 

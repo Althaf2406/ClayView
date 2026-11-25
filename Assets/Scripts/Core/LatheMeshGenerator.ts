@@ -567,4 +567,102 @@ export class LatheMeshGenerator {
       lineSegmentCount: indices.length / 2,
     };
   }
+
+  /**
+   * Builds a neat 3D studio stack of reserve wedged clay balls (MeshTopology.Triangles)
+   * sitting beside the pottery wheel to visually represent the selected batch Qty and Clay mass.
+   * Each ball is a compact CCW oblate clay dome (flat bottom resting on the table).
+   */
+  public static buildClayStockPile(
+    remainingBalls: number,
+    ballRadiusCm: number = 1.9,
+    clayColor: RgbaColor = OPTICAL_PALETTE.CLAY_STONEWARE
+  ): SolidMeshGeometry {
+    const count = Math.max(0, Math.min(12, Math.floor(remainingBalls)));
+    const vertices: number[] = [];
+    const indices: number[] = [];
+
+    if (count === 0) {
+      return { vertices, indices, vertexCount: 0, triangleCount: 0 };
+    }
+
+    const spacing = ballRadiusCm * 2.12;
+    const latSteps = 6;
+    const lonSteps = 12;
+
+    // Precompute tidy 2-tier potter's tray positions (bottom 3x2 grid, top 3x2 nestled above)
+    const offsets: Array<{ x: number; y: number; z: number }> = [];
+    const cols = 3;
+    for (let i = 0; i < count; i++) {
+      const layer = Math.floor(i / 6);
+      const idxInLayer = i % 6;
+      const col = idxInLayer % cols;
+      const row = Math.floor(idxInLayer / cols);
+      const x = (col - 1) * spacing + (layer === 1 ? spacing * 0.15 : 0);
+      const z = (row - 0.5) * spacing;
+      const y = layer * (ballRadiusCm * 1.48);
+      offsets.push({ x, y, z });
+    }
+
+    for (let b = 0; b < offsets.length; b++) {
+      const off = offsets[b];
+      const baseVertex = vertices.length / 10;
+      const rowCols = lonSteps + 1;
+
+      for (let lat = 0; lat <= latSteps; lat++) {
+        // Angle from flat base (phi = -0.35*PI) up to rounded dome apex (phi = +0.5*PI)
+        const v = lat / latSteps;
+        const phi = -0.25 * Math.PI + v * (0.75 * Math.PI);
+        const rRing = Math.max(0.05, Math.cos(phi) * ballRadiusCm);
+        const yLocal = (Math.sin(phi) + 0.71) * ballRadiusCm * 0.92;
+        const shade = 0.72 + 0.28 * v;
+
+        for (let lon = 0; lon <= lonSteps; lon++) {
+          const theta = (lon / lonSteps) * Math.PI * 2.0;
+          const cosT = Math.cos(theta);
+          const sinT = Math.sin(theta);
+          const x = off.x + cosT * rRing;
+          const y = off.y + Math.max(0, yLocal);
+          const z = off.z + sinT * rRing;
+
+          const nx = cosT * Math.cos(phi);
+          const ny = Math.sin(phi);
+          const nz = sinT * Math.cos(phi);
+          const light = 0.75 + 0.25 * Math.max(0, nx * 0.5 + ny * 0.7 + nz * 0.4);
+          const f = shade * light;
+
+          vertices.push(
+            x,
+            y,
+            z,
+            nx,
+            ny,
+            nz,
+            Math.min(1, clayColor.r * f),
+            Math.min(1, clayColor.g * f),
+            Math.min(1, clayColor.b * f),
+            1.0
+          );
+        }
+      }
+
+      for (let lat = 0; lat < latSteps; lat++) {
+        for (let lon = 0; lon < lonSteps; lon++) {
+          const bl = baseVertex + lat * rowCols + lon;
+          const tl = baseVertex + (lat + 1) * rowCols + lon;
+          const br = baseVertex + lat * rowCols + (lon + 1);
+          const tr = baseVertex + (lat + 1) * rowCols + (lon + 1);
+          indices.push(bl, tl, br);
+          indices.push(tl, tr, br);
+        }
+      }
+    }
+
+    return {
+      vertices,
+      indices,
+      vertexCount: vertices.length / 10,
+      triangleCount: indices.length / 3,
+    };
+  }
 }
