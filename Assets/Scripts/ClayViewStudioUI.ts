@@ -112,6 +112,10 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   private _onResetClay = new Event<void>();
   private _onStageAction = new Event<void>();
   private _onCycleClayMass = new Event<void>();
+  private _onCycleHandBuildTech = new Event<void>();
+  private _onCycleMoistureState = new Event<void>();
+  private _onOpenDecoration = new Event<void>();
+  private _onOpenFiring = new Event<void>();
 
   public get onCycleShrinkage(): PublicApi<void> {
     return this._onCycleShrinkage.publicApi();
@@ -131,14 +135,29 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   public get onCycleClayMass(): PublicApi<void> {
     return this._onCycleClayMass.publicApi();
   }
+  public get onCycleHandBuildTech(): PublicApi<void> {
+    return this._onCycleHandBuildTech.publicApi();
+  }
+  public get onCycleMoistureState(): PublicApi<void> {
+    return this._onCycleMoistureState.publicApi();
+  }
+  public get onOpenDecoration(): PublicApi<void> {
+    return this._onOpenDecoration.publicApi();
+  }
+  public get onOpenFiring(): PublicApi<void> {
+    return this._onOpenFiring.publicApi();
+  }
 
   private stageBadgeText: Text | null = null;
   private stageActionLabelText: Text | null = null;
+  private clayBodyBtnLabelText: Text | null = null;
+  private handBuildTechBtnLabelText: Text | null = null;
+  private moistureBtnLabelText: Text | null = null;
   private clayMassBtnLabelText: Text | null = null;
   private shrinkageBadgeText: Text | null = null;
+  private handBuildInfoText: Text | null = null;
   private bellyZoneStatusText: Text | null = null;
   private matchPercentText: Text | null = null;
-  private presetBtnLabelText: Text | null = null;
   private hintCaptionText: Text | null = null;
   private statusIconMat: Material | null = null;
   private built: boolean = false;
@@ -216,27 +235,38 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       this.ivoryColor
     );
 
-    // 2. StageBadgeText ("STEP 1/3 · DETECT TABLE" -> "STEP 2/3 · SELECT CLAY" -> "STEP 3/3 · THROW CLAY")
+    // 2. StageBadgeText ("STEP 1/5 · PILIH CLAY BODY" .. "STEP 5/5 · HASIL AKHIR")
     const stageBadge = this.addColumnText(
       content,
       "StageBadgeText",
-      "STEP 1/3 · DETECT TABLE",
+      "STEP 1/5 · PILIH CLAY BODY",
       "Caption",
-      0.85,
+      0.8,
       this.amberColor
     );
     this.stageBadgeText = stageBadge.text;
 
-    // 3. ShrinkageBadgeText ("12% STONEWARE" -> "14% PORCELAIN")
+    // 3. ShrinkageBadgeText ("12% STONEWARE" -> "14% PORCELAIN" -> "10% EARTHENWARE" -> "11% PAPER CLAY")
     const badge = this.addColumnText(
       content,
       "ShrinkageBadgeText",
       "12% STONEWARE",
       "Callout",
-      0.95,
+      0.9,
       this.cyanColor
     );
     this.shrinkageBadgeText = badge.text;
+
+    // 3b. Active Hand-Building Technique & Moisture State telemetry
+    const hbInfo = this.addColumnText(
+      content,
+      "HandBuildInfoText",
+      "Pinching · plastic",
+      "Caption",
+      0.75,
+      this.ivoryColor
+    );
+    this.handBuildInfoText = hbInfo.text;
 
     // 4. Status Row: Status Icon + BellyZoneStatusText ("MATCH_TEAL" / "OVER_CORAL")
     const statusRow = global.scene.createSceneObject("StatusRow");
@@ -249,18 +279,18 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     statusFlex.justifyContent = FlexJustify.Center;
     statusFlex.columnGap = 0.25;
     statusFlex.width = innerW;
-    statusFlex.height = 0.95;
+    statusFlex.height = 0.9;
     const statusItem = statusRow.createComponent(
       FlexItem.getTypeName()
     ) as FlexItem;
     statusItem.alignSelf = FlexAlignSelf.Stretch;
-    statusItem.overrideHeight = 0.95;
+    statusItem.overrideHeight = 0.9;
 
     const statusIcon = this.addIcon(
       statusRow,
       "ToleranceIcon",
       ICON_CHECK,
-      0.78,
+      0.75,
       this.tealColor
     );
     this.statusIconMat = statusIcon.material;
@@ -280,29 +310,59 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       "MatchPercentText",
       "100%",
       "Headline2",
-      1.25,
+      1.15,
       this.ivoryColor
     );
     this.matchPercentText = match.text;
 
-    // 6. Guided Flow & Studio Controls (Clean 5-button layout)
+    // 6. 5-Stage Hand-Building Studio Controls (SIK Interactables)
     const btnW = Math.min(7.4, innerW);
-    const btnH = 1.3;
+    const btnH = 1.15;
 
     const stageBtn = this.addActionButton(
       content,
       "StageActionBtn",
-      "Lock Table",
+      "Mulai Shaping",
       btnW,
       btnH,
       () => this._onStageAction.invoke()
     );
     this.stageActionLabelText = stageBtn.labelText;
 
+    const clayBodyBtn = this.addActionButton(
+      content,
+      "ShrinkageCycleBtn",
+      "Clay: Stoneware",
+      btnW,
+      btnH,
+      () => this._onCycleShrinkage.invoke()
+    );
+    this.clayBodyBtnLabelText = clayBodyBtn.labelText;
+
+    const techBtn = this.addActionButton(
+      content,
+      "HandBuildTechBtn",
+      "Tech: Pinching",
+      btnW,
+      btnH,
+      () => this._onCycleHandBuildTech.invoke()
+    );
+    this.handBuildTechBtnLabelText = techBtn.labelText;
+
+    const moistureBtn = this.addActionButton(
+      content,
+      "MoistureStateBtn",
+      "State: Plastic",
+      btnW,
+      btnH,
+      () => this._onCycleMoistureState.invoke()
+    );
+    this.moistureBtnLabelText = moistureBtn.labelText;
+
     const massBtn = this.addActionButton(
       content,
       "ClayMassBtn",
-      "Clay: 900g",
+      "Mass: 900g",
       btnW,
       btnH,
       () => this._onCycleClayMass.invoke()
@@ -311,39 +371,29 @@ export class ClayViewStudioUI extends BaseScriptComponent {
 
     this.addActionButton(
       content,
-      "ShrinkageCycleBtn",
-      "Cycle Clay %",
+      "OpenDecorationBtn",
+      "Dekorasi [>]",
       btnW,
       btnH,
-      () => this._onCycleShrinkage.invoke()
+      () => this._onOpenDecoration.invoke()
     );
-
-    const presetBtn = this.addActionButton(
-      content,
-      "PresetShapeBtn",
-      "Shape: Vase",
-      btnW,
-      btnH,
-      () => this._onCyclePreset.invoke()
-    );
-    this.presetBtnLabelText = presetBtn.labelText;
 
     this.addActionButton(
       content,
-      "ToggleWireframeBtn",
-      "Toggle Mesh",
+      "OpenFiringBtn",
+      "Pembakaran [>]",
       btnW,
       btnH,
-      () => this._onToggleWireframe.invoke()
+      () => this._onOpenFiring.invoke()
     );
 
     // 7. Dynamic Guided Flow Caption
     const caption = this.addColumnText(
       content,
       "PreviewStandInCaption",
-      "1. Lock Table -> 2. Clay -> 3. Shape",
+      "1.Clay -> 2.Hand-Build -> 3.Dekor -> 4.Bakar",
       "Caption",
-      0.75,
+      0.7,
       new vec4(1.0, 0.99, 0.96, 0.72)
     );
     this.hintCaptionText = caption.text;
@@ -353,27 +403,43 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     shrinkageLabel: string,
     bellyStatus: ToleranceStatus,
     matchPercentage: number,
-    vesselPresetName?: string,
+    clayBodyShortLabel?: string,
     stageTitle?: string,
     stageActionLabel?: string,
     clayMassLabel?: string,
-    stageHintCaption?: string
+    stageHintCaption?: string,
+    handBuildTechLabel?: string,
+    moistureStateLabel?: string,
+    handBuildSummaryLine?: string
   ): void {
     if (stageTitle && this.stageBadgeText) {
       this.stageBadgeText.text = stageTitle;
       if (this.stageBadgeText.textFill) {
-        this.stageBadgeText.textFill.color = stageTitle.includes("3/3")
-          ? this.tealColor
-          : stageTitle.includes("2/3")
-          ? this.cyanColor
-          : this.amberColor;
+        this.stageBadgeText.textFill.color =
+          stageTitle.includes("5/5") || stageTitle.includes("2/5")
+            ? this.tealColor
+            : stageTitle.includes("3/5") || stageTitle.includes("4/5")
+            ? this.cyanColor
+            : this.amberColor;
       }
     }
     if (stageActionLabel && this.stageActionLabelText) {
       this.stageActionLabelText.text = stageActionLabel;
     }
+    if (clayBodyShortLabel && this.clayBodyBtnLabelText) {
+      this.clayBodyBtnLabelText.text = clayBodyShortLabel;
+    }
+    if (handBuildTechLabel && this.handBuildTechBtnLabelText) {
+      this.handBuildTechBtnLabelText.text = handBuildTechLabel;
+    }
+    if (moistureStateLabel && this.moistureBtnLabelText) {
+      this.moistureBtnLabelText.text = moistureStateLabel;
+    }
     if (clayMassLabel && this.clayMassBtnLabelText) {
       this.clayMassBtnLabelText.text = clayMassLabel;
+    }
+    if (handBuildSummaryLine && this.handBuildInfoText) {
+      this.handBuildInfoText.text = handBuildSummaryLine;
     }
     if (stageHintCaption && this.hintCaptionText) {
       this.hintCaptionText.text = stageHintCaption;
@@ -395,17 +461,6 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     }
     if (this.matchPercentText) {
       this.matchPercentText.text = `${matchPercentage}%`;
-    }
-    if (vesselPresetName && this.presetBtnLabelText) {
-      const shortName =
-        vesselPresetName === "Cylinder Vase"
-          ? "Vase"
-          : vesselPresetName === "Tea Bowl"
-          ? "Bowl"
-          : vesselPresetName === "Studio Mug"
-          ? "Mug"
-          : vesselPresetName;
-      this.presetBtnLabelText.text = `Shape: ${shortName}`;
     }
   }
 

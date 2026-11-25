@@ -1,4 +1,8 @@
 import { ToleranceStatus } from "./ProfileDeltaEvaluator";
+import {
+  HandBuildingTechniqueId,
+  SurfaceTreatmentId,
+} from "./CeramicMaterialTypes";
 
 export interface LatheWireframeGeometry {
   /** Interleaved [x, y, z, r, g, b, a] per vertex (stride = 7 floats) */
@@ -232,63 +236,155 @@ export class LatheMeshGenerator {
   }
 
   /**
-   * Builds a CCW-wound solid hollow-rim rotational clay vessel (MeshTopology.Triangles)
-   * with smooth Catmull-Rom profile and interleaved [x, y, z, nx, ny, nz, r, g, b, a] vertices.
+   * Builds a CCW-wound solid hollow-rim clay vessel (MeshTopology.Triangles)
+   * adapted visually to the active Hand-Building technique (Pinching, Coiling,
+   * Slab Building, or Kurinuki) and Surface Treatment (Sgraffito, Mishima,
+   * Slip Trailing, Nerikomi, Burnishing, Faceting).
    */
   public static buildSolidVessel(
     actualHeightCm: number,
     actualRadiiMm: readonly number[],
     baseColor: RgbaColor = OPTICAL_PALETTE.CLAY_STONEWARE,
     radialSegments: number = 32,
-    heightRings: number = 20
+    heightRings: number = 20,
+    technique: HandBuildingTechniqueId = "PINCHING",
+    surfaceTreatment: SurfaceTreatmentId = "NONE",
+    compressedOrPaddled: boolean = true
   ): SolidMeshGeometry {
     const vertices: number[] = [];
     const indices: number[] = [];
 
+    // Technique-specific geometry resolution:
+    // - SLAB_BUILDING & KURINUKI / FACETING use crisp architectural polygonal walls!
+    const effectiveRadialSegs =
+      surfaceTreatment === "FACETING"
+        ? 10
+        : technique === "SLAB_BUILDING"
+        ? 8
+        : technique === "KURINUKI"
+        ? 7
+        : radialSegments;
+    const effectiveHeightRings =
+      technique === "COILING" ? 28 : heightRings;
+
     const wallInsetCm = 0.12;
-    const cols = radialSegments + 1;
+    const cols = effectiveRadialSegs + 1;
 
     // Outer wall rings
-    for (let r = 0; r <= heightRings; r++) {
-      const t = r / heightRings;
+    for (let r = 0; r <= effectiveHeightRings; r++) {
+      const t = r / effectiveHeightRings;
       const y = t * actualHeightCm;
-      const rad = Math.max(
+      let rad = Math.max(
         0.8,
         this.interpolateRadiusCm(actualRadiiMm, t) - wallInsetCm
       );
 
-      // Subtle throwing grooves for wet clay wheel realism
-      const groove = 1.0 + 0.035 * Math.sin(t * Math.PI * 22.0);
+      // Hand-building silhouette character
+      let groove = 1.0;
+      if (technique === "COILING") {
+        // Pronounced stacked horizontal coil rings (smoothed when paddled/compressed)
+        const coilAmp = compressedOrPaddled ? 0.045 : 0.14;
+        const coilWave = Math.abs(Math.sin(t * Math.PI * 10.0));
+        rad += (coilWave - 0.5) * (compressedOrPaddled ? 0.18 : 0.55);
+        groove = 0.9 + coilAmp * coilWave;
+      } else if (technique === "PINCHING") {
+        // Gentle organic thumb-pinch undulation
+        groove = 1.0 + 0.04 * Math.sin(t * Math.PI * 14.0);
+      } else if (technique === "KURINUKI") {
+        // Carved thick wabi-sabi block slight taper steps
+        groove = 0.94 + 0.06 * Math.cos(t * Math.PI * 7.0);
+      } else {
+        // Slab building crisp flat walls
+        groove = 1.0;
+      }
+
       const shade = (0.76 + 0.24 * t) * groove;
 
-      for (let c = 0; c <= radialSegments; c++) {
-        const theta = (c / radialSegments) * Math.PI * 2.0;
+      for (let c = 0; c <= effectiveRadialSegs; c++) {
+        const theta = (c / effectiveRadialSegs) * Math.PI * 2.0;
         const cosT = Math.cos(theta);
         const sinT = Math.sin(theta);
-        const x = cosT * rad;
-        const z = sinT * rad;
 
-        const lightFactor =
+        let localRad = rad;
+        if (technique === "PINCHING") {
+          localRad += 0.09 * Math.sin(theta * 5.0 + t * 9.0);
+        } else if (technique === "KURINUKI") {
+          localRad += 0.16 * Math.cos(theta * 3.0 - t * 4.0);
+        }
+
+        let lightFactor =
           0.72 + 0.28 * Math.max(0, cosT * 0.6 + sinT * 0.4 + 0.4);
+        let cr = baseColor.r;
+        let cg = baseColor.g;
+        let cb = baseColor.b;
+
+        // Visual surface treatment preview on vertex colors
+        if (surfaceTreatment === "SGRAFFITO") {
+          // Dark slip coat with crisp carved light body bands
+          const carved = Math.sin(theta * 6.0 + t * 12.0) > 0.55;
+          if (!carved) {
+            cr *= 0.48;
+            cg *= 0.46;
+            cb *= 0.50;
+          } else {
+            cr = Math.min(1, cr * 1.2);
+            cg = Math.min(1, cg * 1.18);
+            cb = Math.min(1, cb * 1.12);
+          }
+        } else if (surfaceTreatment === "MISHIMA") {
+          // Flush dark inlaid geometric lines in light clay
+          const inlayLine = Math.abs(Math.sin(t * Math.PI * 6.0)) < 0.16;
+          if (inlayLine) {
+            cr *= 0.35;
+            cg *= 0.40;
+            cb *= 0.52;
+          }
+        } else if (surfaceTreatment === "SLIP_TRAILING") {
+          // Raised contrasting ivory dots/ribbons
+          const trailRidge =
+            Math.sin(theta * 8.0) > 0.65 && Math.sin(t * Math.PI * 8.0) > 0.0;
+          if (trailRidge) {
+            localRad += 0.18;
+            cr = 0.94;
+            cg = 0.92;
+            cb = 0.85;
+          }
+        } else if (surfaceTreatment === "NERIKOMI") {
+          // Marbled / agateware colored clay strata through wall
+          const marble = Math.sin(theta * 3.0 + t * 14.0);
+          if (marble > 0.3) {
+            cr = 0.28;
+            cg = 0.42;
+            cb = 0.58;
+          } else if (marble < -0.35) {
+            cr = 0.92;
+            cg = 0.88;
+            cb = 0.80;
+          }
+        } else if (surfaceTreatment === "BURNISHING") {
+          // Specular satin highlight band
+          lightFactor = 0.8 + 0.38 * Math.pow(Math.max(0, cosT * 0.7 + sinT * 0.5 + 0.2), 2.0);
+        }
+
         const f = shade * lightFactor;
 
         vertices.push(
-          x,
+          cosT * localRad,
           y,
-          z,
+          sinT * localRad,
           cosT,
           0.12,
           sinT,
-          Math.min(1, baseColor.r * f),
-          Math.min(1, baseColor.g * f),
-          Math.min(1, baseColor.b * f),
+          Math.min(1, cr * f),
+          Math.min(1, cg * f),
+          Math.min(1, cb * f),
           baseColor.a
         );
       }
     }
 
-    for (let r = 0; r < heightRings; r++) {
-      for (let c = 0; c < radialSegments; c++) {
+    for (let r = 0; r < effectiveHeightRings; r++) {
+      for (let c = 0; c < effectiveRadialSegs; c++) {
         const bl = r * cols + c;
         const tl = (r + 1) * cols + c;
         const br = r * cols + (c + 1);
@@ -298,17 +394,18 @@ export class LatheMeshGenerator {
       }
     }
 
-    // Hollow rim lip + dark recessed inner wall for authentic pottery vessel look
+    // Hollow rim lip + dark recessed inner wall (Kurinuki has thicker ~1.5 cm carved wall)
     const rimOuterRad = Math.max(
       0.8,
       this.interpolateRadiusCm(actualRadiiMm, 1.0) - wallInsetCm
     );
-    const rimInnerRad = Math.max(0.4, rimOuterRad - 0.65);
+    const rimWallThicknessCm = technique === "KURINUKI" ? 1.4 : 0.65;
+    const rimInnerRad = Math.max(0.4, rimOuterRad - rimWallThicknessCm);
     const innerDepthY = Math.max(0.5, actualHeightCm * 0.25);
 
     const lipStart = vertices.length / 10;
-    for (let c = 0; c <= radialSegments; c++) {
-      const theta = (c / radialSegments) * Math.PI * 2.0;
+    for (let c = 0; c <= effectiveRadialSegs; c++) {
+      const theta = (c / effectiveRadialSegs) * Math.PI * 2.0;
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
       // Outer rim top
@@ -352,7 +449,7 @@ export class LatheMeshGenerator {
       );
     }
 
-    for (let c = 0; c < radialSegments; c++) {
+    for (let c = 0; c < effectiveRadialSegs; c++) {
       const o0 = lipStart + c * 3;
       const i0 = o0 + 1;
       const b0 = o0 + 2;

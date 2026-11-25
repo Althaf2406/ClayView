@@ -26,8 +26,32 @@ import {
   ClayMassId,
   ClayStudioFlowEngine,
   OrbitalBasis,
-  StudioFlowStage,
 } from "./Core/ClayStudioFlowEngine";
+import {
+  CeramicWorkflowStage,
+  ClayBodyId,
+  FiringScheduleParams,
+  GlazeCteFitMode,
+  HandBuildingProcessParams,
+  MOISTURE_STATE_ORDER,
+  SimulationResult,
+  SurfaceTreatmentSelection,
+} from "./Core/CeramicMaterialTypes";
+import {
+  CLAY_BODY_CATALOG,
+  CLAY_BODY_ORDER,
+  FIRING_METHOD_CATALOG,
+  FIRING_METHOD_ORDER,
+  GLAZE_APPLICATION_CATALOG,
+  GLAZE_METHOD_ORDER,
+  HAND_BUILDING_CATALOG,
+  HAND_BUILDING_ORDER,
+  SURFACE_TREATMENT_CATALOG,
+  SURFACE_TREATMENT_ORDER,
+  nextInOrder,
+} from "./Core/CeramicMaterialCatalog";
+import { CeramicCompatibilityEngine } from "./Core/CeramicCompatibilityEngine";
+import { CeramicModalPanel } from "./CeramicModalPanel";
 import { ClayViewStudioUI } from "./ClayViewStudioUI";
 import { Interactable } from "SpectaclesInteractionKit.lspkg/Components/Interaction/Interactable/Interactable";
 import { DragInteractorEvent } from "SpectaclesInteractionKit.lspkg/Core/Interactor/InteractorEvent";
@@ -92,9 +116,48 @@ export class TerraFormController extends BaseScriptComponent {
     "STONEWARE_12"
   );
 
-  // 3-Stage Guided Pottery Studio Flow: DETECT_TABLE -> SELECT_CLAY -> THROWING
-  private flowStage: StudioFlowStage = "DETECT_TABLE";
+  // 5-Stage Sequential Ceramic Materials Workflow:
+  // 1. SELECT_CLAY_BODY -> 2. SHAPING_HANDBUILDING (MAIN FOCUS)
+  // -> [Dekorasi] 3. DECORATION_OPTIONS -> [Pembakaran] 4. FIRING_OPTIONS -> 5. FINAL_RESULT
+  private workflowStage: CeramicWorkflowStage = "SELECT_CLAY_BODY";
+  private selectedClayBody: ClayBodyId = "STONEWARE";
   private selectedClayMass: ClayMassId = "MEDIUM_900G";
+
+  private handBuildingParams: HandBuildingProcessParams = {
+    technique: "PINCHING",
+    moistureState: "plastic",
+    vesselScale: "bowl",
+    rimThicknessMm: 5.0,
+    wallThicknessMm: 6.0,
+    baseThicknessMm: 7.5,
+    scoreAndSlipApplied: true,
+    compressedOrPaddled: true,
+    bidirectionalSlabRolled: true,
+    moistureMismatchBetweenLayers: false,
+    dryingRate: "slow",
+  };
+
+  private surfaceSelection: SurfaceTreatmentSelection = {
+    surfaceTreatment: "NONE",
+    glazeMethod: "NONE",
+    glazeCteFit: "OPTIMAL",
+    slipMatchesBody: true,
+    appliedAtMoisture: "leather-hard",
+    rawGlazeAttempted: false,
+    coarseGrogBody: false,
+  };
+
+  private firingParams: FiringScheduleParams = {
+    method: "ELECTRIC_OXIDATION",
+    useElectricKilnHost: false,
+    heatingRate: "medium",
+    coolingRate: "controlled",
+    candlingComplete: true,
+    lowBisqueCone: false,
+    ventilationActive: true,
+  };
+
+  private lastEvaluation: SimulationResult | null = null;
 
   // 360-degree camera-following orbital basis around WheelCenterAnchor
   private currentOrbitalBasis: OrbitalBasis = {
@@ -129,6 +192,8 @@ export class TerraFormController extends BaseScriptComponent {
   private ghostProfileMeshObj: SceneObject | null = null;
   private caliperGaugeLineObj: SceneObject | null = null;
   private studioCardAnchor: SceneObject | null = null;
+  private modalAnchor: SceneObject | null = null;
+  private modalPanel: CeramicModalPanel | null = null;
   private edgeArrowObj: SceneObject | null = null;
 
   // Optional WorldQueryModule hit-test session for SPECS table detection (Step 1)
@@ -289,7 +354,7 @@ export class TerraFormController extends BaseScriptComponent {
     );
     this.tableReticleLabel = this.getOrCreateText(
       reticleLabelObj,
-      "TABLE DETECTED · TAP LOCK TABLE",
+      "STEP 1: PILIH CLAY BODY · MULAI SHAPING",
       15,
       new vec4(0.29, 0.95, 1.0, 1.0)
     );
@@ -442,6 +507,24 @@ export class TerraFormController extends BaseScriptComponent {
         ) as ClayViewStudioUI);
     }
 
+    // 10b. CeramicModalAnchor (Secondary Modal Panel for Decoration / Firing / Result)
+    this.modalAnchor = this.getOrCreateRootObject(
+      "CeramicModalAnchor",
+      new vec3(-14.2, -15.5, -56.0)
+    );
+    this.modalAnchor
+      .getTransform()
+      .setWorldRotation(quat.fromEulerAngles(0, 12 * MathUtils.DegToRad, 0));
+    const existingModal = this.modalAnchor.getComponent(
+      CeramicModalPanel.getTypeName()
+    ) as CeramicModalPanel | null;
+    this.modalPanel =
+      existingModal ||
+      (this.modalAnchor.createComponent(
+        CeramicModalPanel.getTypeName()
+      ) as CeramicModalPanel);
+    this.modalAnchor.enabled = false;
+
     // 11. EdgeGuidanceHUD parented to MainCamera at (0, 0, -50) cm
     const edgeHudObj = this.mainCameraObj
       ? this.getOrCreateChildObject(
@@ -544,7 +627,7 @@ export class TerraFormController extends BaseScriptComponent {
 
   private pollTableWorldQuery(dt: number): void {
     if (
-      this.flowStage !== "DETECT_TABLE" ||
+      this.workflowStage !== "SELECT_CLAY_BODY" ||
       !this.hitTestSession ||
       !this.mainCameraObj ||
       !this.wheelCenterAnchor
@@ -561,7 +644,7 @@ export class TerraFormController extends BaseScriptComponent {
       const rayEnd = rayStart.add(camT.back.uniformScale(140.0));
       this.hitTestSession.hitTest(rayStart, rayEnd, (hitResult: any) => {
         if (
-          this.flowStage !== "DETECT_TABLE" ||
+          this.workflowStage !== "SELECT_CLAY_BODY" ||
           !hitResult ||
           !hitResult.position ||
           !this.wheelCenterAnchor
@@ -764,7 +847,7 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   private bindUIHandlesAndVoice(): void {
-    // 1. Studio Card UI Buttons
+    // 1. Studio Card UI Buttons (Primary Hand-Building Flow + Secondary Modal Triggers)
     if (this.studioUI) {
       this.studioUI.onStageAction.add(() => {
         this.playUiClick();
@@ -776,7 +859,23 @@ export class TerraFormController extends BaseScriptComponent {
       });
       this.studioUI.onCycleShrinkage.add(() => {
         this.playUiClick();
-        this.cycleShrinkagePreset();
+        this.cycleClayBody();
+      });
+      this.studioUI.onCycleHandBuildTech.add(() => {
+        this.playUiClick();
+        this.cycleHandBuildingTechnique();
+      });
+      this.studioUI.onCycleMoistureState.add(() => {
+        this.playUiClick();
+        this.cycleMoistureState();
+      });
+      this.studioUI.onOpenDecoration.add(() => {
+        this.playUiClick();
+        this.openDecorationModal();
+      });
+      this.studioUI.onOpenFiring.add(() => {
+        this.playUiClick();
+        this.openFiringModal();
       });
       this.studioUI.onCyclePreset.add(() => {
         this.playUiClick();
@@ -789,6 +888,50 @@ export class TerraFormController extends BaseScriptComponent {
       this.studioUI.onResetClay.add(() => {
         this.playUiClick();
         this.resetClayDeformation();
+      });
+    }
+
+    // 1b. Secondary Modal Panel (Dekorasi -> Pembakaran -> Hasil Akhir)
+    if (this.modalPanel) {
+      this.modalPanel.onCycleSurface.add(() => {
+        this.playUiClick();
+        this.cycleSurfaceTreatment();
+      });
+      this.modalPanel.onCycleGlazeMethod.add(() => {
+        this.playUiClick();
+        this.cycleGlazeMethod();
+      });
+      this.modalPanel.onCycleGlazeCte.add(() => {
+        this.playUiClick();
+        this.cycleGlazeCteFit();
+      });
+      this.modalPanel.onToggleCraftPrep.add(() => {
+        this.playUiClick();
+        this.toggleCraftPrepMode();
+      });
+      this.modalPanel.onCycleFiringMethod.add(() => {
+        this.playUiClick();
+        this.cycleFiringMethod();
+      });
+      this.modalPanel.onCycleCooling.add(() => {
+        this.playUiClick();
+        this.cycleCoolingRate();
+      });
+      this.modalPanel.onToggleKilnHost.add(() => {
+        this.playUiClick();
+        this.toggleElectricKilnHost();
+      });
+      this.modalPanel.onCycleBisqueVent.add(() => {
+        this.playUiClick();
+        this.cycleBisqueAndVentilation();
+      });
+      this.modalPanel.onPrimaryNext.add(() => {
+        this.playUiClick();
+        this.handleModalPrimaryNext();
+      });
+      this.modalPanel.onSecondaryBack.add(() => {
+        this.playUiClick();
+        this.handleModalSecondaryBack();
       });
     }
 
@@ -1085,23 +1228,245 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   public handleStageAction(): void {
-    if (this.flowStage === "DETECT_TABLE") {
+    if (this.workflowStage === "SELECT_CLAY_BODY") {
       this.stopTableWorldQuery();
-      this.flowStage = "SELECT_CLAY";
+      this.workflowStage = "SHAPING_HANDBUILDING";
       this.recomputeAndRefreshVisuals();
-    } else if (this.flowStage === "SELECT_CLAY") {
-      this.flowStage = "THROWING";
-      this.recomputeAndRefreshVisuals();
+    } else if (this.workflowStage === "SHAPING_HANDBUILDING") {
+      this.resetClayDeformation();
     } else {
+      this.workflowStage = "SHAPING_HANDBUILDING";
       this.resetClayDeformation();
     }
   }
 
   private ensureThrowingStage(): void {
-    if (this.flowStage !== "THROWING") {
+    if (this.workflowStage !== "SHAPING_HANDBUILDING") {
       this.stopTableWorldQuery();
-      this.flowStage = "THROWING";
+      this.workflowStage = "SHAPING_HANDBUILDING";
     }
+  }
+
+  public cycleClayBody(): void {
+    this.selectedClayBody = nextInOrder(CLAY_BODY_ORDER, this.selectedClayBody);
+    const spec = CLAY_BODY_CATALOG[this.selectedClayBody];
+    this.setShrinkagePreset(spec.legacyClayType);
+  }
+
+  public cycleHandBuildingTechnique(): void {
+    const nextTech = nextInOrder(
+      HAND_BUILDING_ORDER,
+      this.handBuildingParams.technique
+    );
+    const spec = HAND_BUILDING_CATALOG[nextTech];
+    this.handBuildingParams = {
+      ...this.handBuildingParams,
+      technique: nextTech,
+      wallThicknessMm:
+        (spec.recommendedWallMinMm + spec.recommendedWallMaxMm) / 2,
+      baseThicknessMm:
+        (spec.recommendedBaseMinMm + spec.recommendedBaseMaxMm) / 2,
+      rimThicknessMm: Math.max(4.0, spec.recommendedWallMinMm),
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleMoistureState(): void {
+    const nextMoisture = nextInOrder(
+      MOISTURE_STATE_ORDER,
+      this.handBuildingParams.moistureState
+    );
+    this.handBuildingParams = {
+      ...this.handBuildingParams,
+      moistureState: nextMoisture,
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public openDecorationModal(): void {
+    this.stopTableWorldQuery();
+    this.workflowStage = "DECORATION_OPTIONS";
+    // Auto-advance moisture from plastic -> leather-hard if user didn't switch yet
+    if (this.handBuildingParams.moistureState === "plastic") {
+      this.handBuildingParams = {
+        ...this.handBuildingParams,
+        moistureState: "leather-hard",
+      };
+    }
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public openFiringModal(): void {
+    this.stopTableWorldQuery();
+    this.workflowStage = "FIRING_OPTIONS";
+    // Default realistic studio prep: advance to bone-dry/bisqueware when entering kiln unless user wants to test wet clay
+    if (
+      this.handBuildingParams.moistureState === "plastic" ||
+      this.handBuildingParams.moistureState === "leather-hard"
+    ) {
+      this.handBuildingParams = {
+        ...this.handBuildingParams,
+        moistureState:
+          this.surfaceSelection.glazeMethod !== "NONE" &&
+          !this.surfaceSelection.rawGlazeAttempted
+            ? "bisqueware"
+            : "bone-dry",
+      };
+    }
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleSurfaceTreatment(): void {
+    const nextSurf = nextInOrder(
+      SURFACE_TREATMENT_ORDER,
+      this.surfaceSelection.surfaceTreatment
+    );
+    this.surfaceSelection = {
+      ...this.surfaceSelection,
+      surfaceTreatment: nextSurf,
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleGlazeMethod(): void {
+    const nextGlaze = nextInOrder(
+      GLAZE_METHOD_ORDER,
+      this.surfaceSelection.glazeMethod
+    );
+    this.surfaceSelection = {
+      ...this.surfaceSelection,
+      glazeMethod: nextGlaze,
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleGlazeCteFit(): void {
+    const cteOrder: readonly GlazeCteFitMode[] = [
+      "OPTIMAL",
+      "HIGH_CTE_CRAZING",
+      "LOW_CTE_SHIVERING",
+    ];
+    this.surfaceSelection = {
+      ...this.surfaceSelection,
+      glazeCteFit: nextInOrder(cteOrder, this.surfaceSelection.glazeCteFit),
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public toggleCraftPrepMode(): void {
+    const nextOk = !this.handBuildingParams.scoreAndSlipApplied;
+    this.handBuildingParams = {
+      ...this.handBuildingParams,
+      scoreAndSlipApplied: nextOk,
+      compressedOrPaddled: nextOk,
+      bidirectionalSlabRolled: nextOk,
+      moistureMismatchBetweenLayers: !nextOk,
+    };
+    this.surfaceSelection = {
+      ...this.surfaceSelection,
+      slipMatchesBody: nextOk,
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleFiringMethod(): void {
+    const nextMethod = nextInOrder(
+      FIRING_METHOD_ORDER,
+      this.firingParams.method
+    );
+    this.firingParams = {
+      ...this.firingParams,
+      method: nextMethod,
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleCoolingRate(): void {
+    const rates: readonly ("controlled" | "normal" | "fast")[] = [
+      "controlled",
+      "normal",
+      "fast",
+    ];
+    this.firingParams = {
+      ...this.firingParams,
+      coolingRate: nextInOrder(rates, this.firingParams.coolingRate),
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public toggleElectricKilnHost(): void {
+    this.firingParams = {
+      ...this.firingParams,
+      useElectricKilnHost: !this.firingParams.useElectricKilnHost,
+    };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleBisqueAndVentilation(): void {
+    if (!this.firingParams.lowBisqueCone && this.firingParams.ventilationActive) {
+      this.firingParams = {
+        ...this.firingParams,
+        lowBisqueCone: true,
+        ventilationActive: true,
+      };
+    } else if (this.firingParams.lowBisqueCone && this.firingParams.ventilationActive) {
+      this.firingParams = {
+        ...this.firingParams,
+        lowBisqueCone: false,
+        ventilationActive: false,
+      };
+    } else {
+      this.firingParams = {
+        ...this.firingParams,
+        lowBisqueCone: false,
+        ventilationActive: true,
+      };
+    }
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public handleModalPrimaryNext(): void {
+    if (this.workflowStage === "DECORATION_OPTIONS") {
+      this.openFiringModal();
+    } else if (this.workflowStage === "FIRING_OPTIONS") {
+      this.workflowStage = "FINAL_RESULT";
+      this.recomputeAndRefreshVisuals();
+    } else if (this.workflowStage === "FINAL_RESULT") {
+      this.workflowStage = "FIRING_OPTIONS";
+      this.recomputeAndRefreshVisuals();
+    }
+  }
+
+  public handleModalSecondaryBack(): void {
+    if (this.workflowStage === "DECORATION_OPTIONS") {
+      this.workflowStage = "SHAPING_HANDBUILDING";
+      this.recomputeAndRefreshVisuals();
+    } else if (this.workflowStage === "FIRING_OPTIONS") {
+      this.workflowStage = "DECORATION_OPTIONS";
+      this.recomputeAndRefreshVisuals();
+    } else if (this.workflowStage === "FINAL_RESULT") {
+      this.workflowStage = "SHAPING_HANDBUILDING";
+      this.handBuildingParams = {
+        ...this.handBuildingParams,
+        moistureState: "plastic",
+      };
+      this.resetClayDeformation();
+    }
+  }
+
+  private evaluateMaterialSimulation(): SimulationResult {
+    const radiiMm = this.getActualRadiiMm();
+    const maxRadiusMm = Math.max(...radiiMm);
+    return CeramicCompatibilityEngine.evaluate({
+      clayBody: this.selectedClayBody,
+      shaping: this.handBuildingParams,
+      surface: this.surfaceSelection,
+      firing: this.firingParams,
+      wetDimensionsCm: {
+        heightCm: this.getActualHeightCm(),
+        maxDiameterCm: Math.round((maxRadiusMm * 2.0) / 10.0 * 100) / 100,
+      },
+    });
   }
 
   private stopTableWorldQuery(): void {
@@ -1212,8 +1577,8 @@ export class TerraFormController extends BaseScriptComponent {
     // 0. 360-degree camera-following orbital layout for UI Card, Caliper Gauge, and Handles
     this.updateOrbitalCameraLayout();
 
-    // 0b. Step 1 (DETECT_TABLE): gently pulse & rotate table reticle + poll SPECS WorldQuery
-    if (this.flowStage === "DETECT_TABLE") {
+    // 0b. Step 1 (SELECT_CLAY_BODY): gently pulse & rotate table reticle + poll SPECS WorldQuery
+    if (this.workflowStage === "SELECT_CLAY_BODY") {
       this.tableReticlePulsePhase += dt * 2.4;
       if (this.tableReticleObj) {
         const pulse = 1.0 + 0.035 * Math.sin(this.tableReticlePulsePhase);
@@ -1229,15 +1594,18 @@ export class TerraFormController extends BaseScriptComponent {
       this.pollTableWorldQuery(dt);
     }
 
-    // 1. Spin wheel bat & wet clay mesh continuously
-    this.wheelSpinAngleRad =
-      (this.wheelSpinAngleRad + dt * 1.6) % (Math.PI * 2);
-    const spinQuat = quat.fromEulerAngles(0, this.wheelSpinAngleRad, 0);
-    if (this.wheelBatObj) {
-      this.wheelBatObj.getTransform().setLocalRotation(spinQuat);
-    }
-    if (this.spinningClayObj) {
-      this.spinningClayObj.getTransform().setLocalRotation(spinQuat);
+    // 1. Hand-Building Banding Board: stationary during Pinching/Coiling/Slab/Kurinuki
+    //    (slow showcase turntable rotation only in FINAL_RESULT to inspect fired ceramic)
+    if (this.workflowStage === "FINAL_RESULT") {
+      this.wheelSpinAngleRad =
+        (this.wheelSpinAngleRad + dt * 0.45) % (Math.PI * 2);
+      const showcaseQuat = quat.fromEulerAngles(0, this.wheelSpinAngleRad, 0);
+      if (this.wheelBatObj) {
+        this.wheelBatObj.getTransform().setLocalRotation(showcaseQuat);
+      }
+      if (this.spinningClayObj) {
+        this.spinningClayObj.getTransform().setLocalRotation(showcaseQuat);
+      }
     }
 
     // 2. Real SPECS bare-hand sculpting (inside push & outside squeeze)
@@ -1304,6 +1672,23 @@ export class TerraFormController extends BaseScriptComponent {
         .getTransform()
         .setWorldRotation(
           quat.fromEulerAngles(0, basis.yawRad - 12 * MathUtils.DegToRad, 0)
+        );
+    }
+
+    // 1b. CeramicModalAnchor orbits to user's left side facing camera (+12 deg gentle inward cant)
+    if (this.modalAnchor) {
+      const modalLeft = 14.2;
+      const modalBack = 1.5;
+      const modalWorldPos = new vec3(
+        anchorPos.x - basis.rightX * modalLeft - basis.toCamX * modalBack,
+        anchorPos.y + 10.5,
+        anchorPos.z - basis.rightZ * modalLeft - basis.toCamZ * modalBack
+      );
+      this.modalAnchor.getTransform().setWorldPosition(modalWorldPos);
+      this.modalAnchor
+        .getTransform()
+        .setWorldRotation(
+          quat.fromEulerAngles(0, basis.yawRad + 12 * MathUtils.DegToRad, 0)
         );
     }
 
@@ -1446,8 +1831,12 @@ export class TerraFormController extends BaseScriptComponent {
       }
     }
 
-    // Show glowing table reticle & prompt ONLY during Step 1 (DETECT_TABLE)
-    const showReticle = this.flowStage === "DETECT_TABLE";
+    // Evaluate Ceramic Material & Compatibility Engine across all 4 categories
+    const materialEval = this.evaluateMaterialSimulation();
+    this.lastEvaluation = materialEval;
+
+    // Show glowing table reticle & prompt ONLY during Step 1 (SELECT_CLAY_BODY)
+    const showReticle = this.workflowStage === "SELECT_CLAY_BODY";
     if (this.tableReticleObj) {
       this.tableReticleObj.enabled = showReticle;
     }
@@ -1494,7 +1883,15 @@ export class TerraFormController extends BaseScriptComponent {
       this.recolorDiamondHandle(this.heightHandleBuilder, 1.1, heightColor);
     }
 
-    // Update UIKit Studio Card HUD with 3-step guided flow state
+    // Update UIKit Studio Card HUD with 5-stage Ceramic Materials Workflow
+    const claySpec = CLAY_BODY_CATALOG[this.selectedClayBody];
+    const techSpec = HAND_BUILDING_CATALOG[this.handBuildingParams.technique];
+    const surfSpec =
+      SURFACE_TREATMENT_CATALOG[this.surfaceSelection.surfaceTreatment];
+    const glazeSpec =
+      GLAZE_APPLICATION_CATALOG[this.surfaceSelection.glazeMethod];
+    const firingSpec = FIRING_METHOD_CATALOG[this.firingParams.method];
+
     if (this.studioUI) {
       const massPreset = ClayStudioFlowEngine.getMassPreset(
         this.selectedClayMass
@@ -1503,27 +1900,82 @@ export class TerraFormController extends BaseScriptComponent {
         massPreset.grams >= 1000
           ? `${(massPreset.grams / 1000).toFixed(1)}kg`
           : `${massPreset.grams}g`;
+      const stageTitle =
+        this.workflowStage === "SELECT_CLAY_BODY"
+          ? "STEP 1/5 · PILIH CLAY BODY"
+          : this.workflowStage === "SHAPING_HANDBUILDING"
+          ? "STEP 2/5 · HAND-BUILDING"
+          : this.workflowStage === "DECORATION_OPTIONS"
+          ? "STEP 3/5 · OPSI DEKORASI"
+          : this.workflowStage === "FIRING_OPTIONS"
+          ? "STEP 4/5 · PEMBAKARAN"
+          : "STEP 5/5 · HASIL & EVALUASI";
+      const stageActionLabel =
+        this.workflowStage === "SELECT_CLAY_BODY"
+          ? "Mulai Shaping"
+          : "Reset Globe";
       const stageHint =
-        this.flowStage === "DETECT_TABLE"
-          ? "1. Aim at table · Tap Lock Table"
-          : this.flowStage === "SELECT_CLAY"
-          ? "2. Pick clay weight · Start"
-          : "3. Pull Globe up · Hand In/Out";
+        this.workflowStage === "SELECT_CLAY_BODY"
+          ? `${claySpec.coneRangeLabel}`
+          : this.workflowStage === "SHAPING_HANDBUILDING"
+          ? `${techSpec.indonesianName} · Wall ${this.handBuildingParams.wallThicknessMm.toFixed(0)}mm`
+          : `${materialEval.status}`;
+
+      const badgeLabel =
+        this.selectedClayBody === "PAPER_CLAY"
+          ? "11% PAPER CLAY"
+          : KilnShrinkageEngine.getDisplayLabel(this.currentClayType);
+
       this.studioUI.updateMetrics(
-        KilnShrinkageEngine.getDisplayLabel(this.currentClayType),
+        badgeLabel,
         bellyStatus,
         combinedMatch,
-        this.currentVesselSpec.presetName,
-        ClayStudioFlowEngine.getStageTitle(this.flowStage),
-        ClayStudioFlowEngine.getStageActionLabel(this.flowStage),
-        `Clay: ${massShort}`,
-        stageHint
+        `Clay: ${claySpec.name}`,
+        stageTitle,
+        stageActionLabel,
+        `Mass: ${massShort}`,
+        stageHint,
+        `Tech: ${techSpec.name}`,
+        `State: ${this.handBuildingParams.moistureState}`,
+        `${techSpec.name} · ${this.handBuildingParams.moistureState}`
       );
+    }
+
+    // Sync Secondary Modal Panel (Dekorasi / Pembakaran / Hasil Akhir)
+    if (this.modalPanel) {
+      const cteLabel =
+        this.surfaceSelection.glazeCteFit === "OPTIMAL"
+          ? "CTE: Optimal"
+          : this.surfaceSelection.glazeCteFit === "HIGH_CTE_CRAZING"
+          ? "CTE: Crazing (-3-4x)"
+          : "CTE: Shivering (Fail)";
+      const bisqueVentLabel = !this.firingParams.ventilationActive
+        ? "Vent: OFF (Risk!)"
+        : this.firingParams.lowBisqueCone
+        ? "Bisque: Low C06"
+        : "Bisque/Vent: Safe";
+
+      this.modalPanel.syncState({
+        stage: this.workflowStage,
+        surfaceLabel: `Surf: ${surfSpec.name}`,
+        glazeMethodLabel: `Glaze: ${glazeSpec.name}`,
+        glazeCteLabel: cteLabel,
+        craftPrepLabel: this.handBuildingParams.scoreAndSlipApplied
+          ? "Prep: Score&Slip ON"
+          : "Prep: OFF (Defect!)",
+        firingMethodLabel: `Fire: ${firingSpec.name}`,
+        coolingLabel: `Cool: ${this.firingParams.coolingRate}`,
+        kilnHostLabel: this.firingParams.useElectricKilnHost
+          ? "Kiln: Electric Host"
+          : "Kiln: Dedicated",
+        bisqueVentLabel,
+        evaluation: materialEval,
+      });
     }
 
     this.rebuildGhostWireframeMesh(bellyStatus, zoneStatuses);
     this.rebuildCaliperGaugeMesh(actualHeightCm, heightStatus);
-    this.rebuildSpinningClayMesh(actualHeightCm);
+    this.rebuildSpinningClayMesh(actualHeightCm, materialEval);
   }
 
   private statusToVec4(status: ToleranceStatus): vec4 {
@@ -1652,17 +2104,33 @@ export class TerraFormController extends BaseScriptComponent {
     }
   }
 
-  private rebuildSpinningClayMesh(actualHeightCm: number): void {
+  private rebuildSpinningClayMesh(
+    actualHeightCm: number,
+    materialEval?: SimulationResult
+  ): void {
     if (!this.spinningClayObj) return;
-    const clayColor =
-      this.currentClayType === "PORCELAIN_14"
-        ? OPTICAL_PALETTE.CLAY_PORCELAIN
-        : OPTICAL_PALETTE.CLAY_STONEWARE;
+    const claySpec = CLAY_BODY_CATALOG[this.selectedClayBody];
+    const isFinalFired = this.workflowStage === "FINAL_RESULT" && !!materialEval;
+    const clayColor = isFinalFired
+      ? materialEval!.firedTintColor
+      : claySpec.wetColor;
+
+    // Visually demonstrate physical kiln shrinkage when displaying FINAL_RESULT!
+    const scaleFactor = isFinalFired
+      ? Math.max(0.75, 1.0 - materialEval!.appliedShrinkagePct / 100.0)
+      : 1.0;
+    const renderHeightCm = actualHeightCm * scaleFactor;
+    const renderRadiiMm = this.getActualRadiiMm().map((r) => r * scaleFactor);
 
     const geom = LatheMeshGenerator.buildSolidVessel(
-      actualHeightCm,
-      this.getActualRadiiMm(),
-      clayColor
+      renderHeightCm,
+      renderRadiiMm,
+      clayColor,
+      32,
+      20,
+      this.handBuildingParams.technique,
+      this.surfaceSelection.surfaceTreatment,
+      this.handBuildingParams.compressedOrPaddled
     );
 
     if (!this.clayMeshBuilder) {
