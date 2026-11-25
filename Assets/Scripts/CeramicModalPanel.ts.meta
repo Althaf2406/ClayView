@@ -1,0 +1,48 @@
+- !<AssetImportMetadata/3db3b234-1b97-4dfe-9cf6-ab67bde99212>
+  ImportedAssetIds:
+    TypeScriptAsset: !<reference> ccb91b34-8e72-406a-a6b9-b03eda30a8f2
+  ImporterName: TypeScriptAssetImporter
+  PrimaryAsset: !<reference> ccb91b34-8e72-406a-a6b9-b03eda30a8f2
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    TypeScriptAsset: !<own> de2f3b98-bc4f-4d5d-a8d6-f1c48a86756f
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<TypeScriptAssetData/de2f3b98-bc4f-4d5d-a8d6-f1c48a86756f>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  VersionPrerelease: ""
+  UpdateOrder: 0
+  ComponentUid: a14a7020-ddb5-4e67-b24f-7902ff8cf50f
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    panelWidthCm: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - panelWidthCm: 9.600000
+  ScriptTypes:
+    -
+      {}
+  InputLines:
+    - '// @ui {"widget":"label", "label":"<span style=\"color: #4AF2FF;\">CeramicModalPanel — Decoration / Firing / Result Modal</span>"}'
+    - '// @ui {"widget":"separator"}'
+    - '// @input float panelWidthCm = 8.6 {"hint":"Calibrated modal width in cm for SPECS additive FOV", "widget":"slider", "min":8, "max":12, "step":0.5}'

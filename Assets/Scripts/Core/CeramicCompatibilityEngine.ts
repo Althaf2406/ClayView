@@ -973,7 +973,7 @@ export class CeramicCompatibilityEngine {
     defaultFired: RgbaColor
   ): RgbaColor {
     if (status === "Failed (Structural/Thermal Failure)") {
-      return { r: 0.72, g: 0.28, b: 0.26, a: 1.0 };
+      return { r: 0.96, g: 0.44, b: 0.38, a: 1.0 };
     }
     switch (input.firing.method) {
       case "PIT_OPEN":

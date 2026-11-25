@@ -66,19 +66,19 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   @ui.separator
   @ui.group_start("Settings")
   @input
-  @hint("Calibrated card width in cm (must stay inside SPECS +/-20.5cm horizontal FOV)")
+  @hint("Calibrated card width in cm (stays well inside SPECS +/-20.5cm horizontal FOV)")
   @widget(new SliderWidget(7.0, 11.0, 0.5))
-  public cardWidthCm: number = 8.4;
+  public cardWidthCm: number = 8.2;
 
   @input
   @hint("Inner horizontal/vertical padding in cm")
   @widget(new SliderWidget(0.3, 1.2, 0.1))
-  public paddingCm: number = 0.45;
+  public paddingCm: number = 0.42;
 
   @input
   @hint("Row spacing in cm")
   @widget(new SliderWidget(0.2, 1.0, 0.05))
-  public rowGapCm: number = 0.28;
+  public rowGapCm: number = 0.24;
 
   @input
   @hint("Primary Ivory text color for additive LCOS display")

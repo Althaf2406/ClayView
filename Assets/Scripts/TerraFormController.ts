@@ -1658,37 +1658,37 @@ export class TerraFormController extends BaseScriptComponent {
 
     const facingQuat = quat.fromEulerAngles(0, basis.yawRad, 0);
 
-    // 1. StudioCardAnchor orbits to user's right side and faces camera (-12 deg gentle inward cant)
+    // 1. StudioCardAnchor orbits to user's right side safely inside SPECS 37-deg FOV
     if (this.studioCardAnchor) {
-      const cardRight = 13.4;
-      const cardBack = 3.0;
+      const cardRight = 11.4;
+      const cardBack = 1.5;
       const cardWorldPos = new vec3(
         anchorPos.x + basis.rightX * cardRight - basis.toCamX * cardBack,
-        anchorPos.y + 10.5,
+        anchorPos.y + 11.5,
         anchorPos.z + basis.rightZ * cardRight - basis.toCamZ * cardBack
       );
       this.studioCardAnchor.getTransform().setWorldPosition(cardWorldPos);
       this.studioCardAnchor
         .getTransform()
         .setWorldRotation(
-          quat.fromEulerAngles(0, basis.yawRad - 12 * MathUtils.DegToRad, 0)
+          quat.fromEulerAngles(0, basis.yawRad - 15 * MathUtils.DegToRad, 0)
         );
     }
 
-    // 1b. CeramicModalAnchor orbits to user's left side facing camera (+12 deg gentle inward cant)
+    // 1b. CeramicModalAnchor orbits to user's left side safely inside SPECS 37-deg FOV
     if (this.modalAnchor) {
-      const modalLeft = 14.2;
-      const modalBack = 1.5;
+      const modalLeft = 11.2;
+      const modalBack = 1.0;
       const modalWorldPos = new vec3(
         anchorPos.x - basis.rightX * modalLeft - basis.toCamX * modalBack,
-        anchorPos.y + 10.5,
+        anchorPos.y + 11.5,
         anchorPos.z - basis.rightZ * modalLeft - basis.toCamZ * modalBack
       );
       this.modalAnchor.getTransform().setWorldPosition(modalWorldPos);
       this.modalAnchor
         .getTransform()
         .setWorldRotation(
-          quat.fromEulerAngles(0, basis.yawRad + 12 * MathUtils.DegToRad, 0)
+          quat.fromEulerAngles(0, basis.yawRad + 15 * MathUtils.DegToRad, 0)
         );
     }
 
@@ -1834,6 +1834,15 @@ export class TerraFormController extends BaseScriptComponent {
     // Evaluate Ceramic Material & Compatibility Engine across all 4 categories
     const materialEval = this.evaluateMaterialSimulation();
     this.lastEvaluation = materialEval;
+
+    // Hide CaliperGaugeLine when left-side Modal Panel is open so they never overlap!
+    const isModalOpen =
+      this.workflowStage === "DECORATION_OPTIONS" ||
+      this.workflowStage === "FIRING_OPTIONS" ||
+      this.workflowStage === "FINAL_RESULT";
+    if (this.caliperGaugeLineObj) {
+      this.caliperGaugeLineObj.enabled = !isModalOpen;
+    }
 
     // Show glowing table reticle & prompt ONLY during Step 1 (SELECT_CLAY_BODY)
     const showReticle = this.workflowStage === "SELECT_CLAY_BODY";
