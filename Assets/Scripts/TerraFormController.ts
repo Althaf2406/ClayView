@@ -52,9 +52,10 @@ import {
 } from "./Core/CeramicMaterialCatalog";
 import { CeramicCompatibilityEngine } from "./Core/CeramicCompatibilityEngine";
 import {
-  FREEFORM_PRESET_ORDER,
   FreeformClayField,
-  FreeformSculptPreset,
+  SCULPT_BRUSH_CATALOG,
+  SCULPT_BRUSH_ORDER,
+  SculptBrushSize,
 } from "./Core/FreeformClayField";
 import { CeramicModalPanel } from "./CeramicModalPanel";
 import { ClayViewStudioUI } from "./ClayViewStudioUI";
@@ -164,9 +165,9 @@ export class TerraFormController extends BaseScriptComponent {
 
   private lastEvaluation: SimulationResult | null = null;
 
-  // 2D Polar Freeform 3D Sculpting Field (asymmetric wiggle rims, spouts, dips, lotus waves, local pinches!)
+  // 2D Polar Freeform 3D Sculpting Field (100% manual hand/finger pulling, pinching, lifting, dipping!)
   private freeformField: FreeformClayField = new FreeformClayField();
-  private nextFreeformPreset: FreeformSculptPreset = "WIGGLE_RIM";
+  private sculptBrushSize: SculptBrushSize = "MEDIUM";
 
   // 360-degree camera-following orbital basis around WheelCenterAnchor
   private currentOrbitalBasis: OrbitalBasis = {
@@ -216,13 +217,20 @@ export class TerraFormController extends BaseScriptComponent {
   private heightHandleInteractable: Interactable | null = null;
   private heightHandleBuilder: MeshBuilder | null = null;
 
-  // Free 3D PotterHandTool (dip inside from top OR squeeze from outside in Preview!)
+  // Direct pinch/grab-anywhere-on-clay collider + glowing 3D sculpt pinpoint marker
+  private claySculptColliderObj: SceneObject | null = null;
+  private claySculptCylinder: CylinderShape | null = null;
+  private claySculptInteractable: Interactable | null = null;
+  private activeDirectGrabLocal: vec3 | null = null;
+  private sculptPinpointObj: SceneObject | null = null;
+  private sculptPinpointTimer: number = 0;
+
+  // Free 3D PotterHandTool (full 3D manual sculpt tool: front, back, sides, inside cavity, rim!)
   private potterHandToolObj: SceneObject | null = null;
   private potterHandToolInteractable: Interactable | null = null;
   private potterHandToolBuilder: MeshBuilder | null = null;
   private potterHandToolLabel: Text | null = null;
-  private potterToolPlaneX: number = -5.2;
-  private potterToolPlaneY: number = 14.0;
+  private potterToolLocalPos: vec3 = new vec3(-5.2, 14.0, 2.5);
 
   // Live glowing horizontal SculptContactRing on the clay at active hand height
   private contactRingObj: SceneObject | null = null;
@@ -230,10 +238,14 @@ export class TerraFormController extends BaseScriptComponent {
   private contactRingVisual: RenderMeshVisual | null = null;
   private contactRingFadeTimer: number = 0;
 
-  // Real SPECS Hand Tracking state (left + right hands)
+  // Real SPECS Hand Tracking state (left + right hands: pinch-pull latch + fingertip poke)
   private handInputData: HandInputData | null = null;
   private prevLeftHandLocal: vec3 | null = null;
   private prevRightHandLocal: vec3 | null = null;
+  private leftHandPinchGrab: { theta: number; t: number } | null = null;
+  private rightHandPinchGrab: { theta: number; t: number } | null = null;
+  private prevLeftIndexLocal: vec3 | null = null;
+  private prevRightIndexLocal: vec3 | null = null;
 
   // Text Component references on CaliperGaugeLine
   private targetHeightText: Text | null = null;
@@ -368,12 +380,63 @@ export class TerraFormController extends BaseScriptComponent {
       new vec4(0.29, 0.95, 1.0, 1.0)
     );
 
-    // 3. SpinningClayMesh (procedural rotating hollow wet clay vessel stand-in)
+    // 3. SpinningClayMesh (procedural hollow wet clay vessel)
     this.spinningClayObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "SpinningClayMesh",
       new vec3(0.0, 0.0, 0.0)
     );
+
+    // 3b. Direct Clay Sculpt Collider — grab/pinch ANY point directly on the clay wall or rim
+    //     and pull outward, push inward, lift up, or dip down manually!
+    const initH = Math.max(6.0, this.clayState.actualHeightCm);
+    const initMaxR = Math.max(...this.getActualRadiiMm()) / 10.0;
+    this.claySculptColliderObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "ClayDirectSculptCollider",
+      new vec3(0.0, initH * 0.5, 0.0)
+    );
+    let clayCollider = this.claySculptColliderObj.getComponent(
+      "Physics.ColliderComponent"
+    ) as ColliderComponent | null;
+    if (!clayCollider) {
+      clayCollider = this.claySculptColliderObj.createComponent(
+        "Physics.ColliderComponent"
+      ) as ColliderComponent;
+    }
+    const cylShape = Shape.createCylinderShape();
+    cylShape.axis = Axis.Y;
+    cylShape.radius = initMaxR + 0.5;
+    cylShape.length = initH + 1.0;
+    clayCollider.shape = cylShape;
+    this.claySculptCylinder = cylShape;
+
+    let clayInteractable = this.claySculptColliderObj.getComponent(
+      Interactable.getTypeName()
+    ) as Interactable | null;
+    if (!clayInteractable) {
+      clayInteractable = this.claySculptColliderObj.createComponent(
+        Interactable.getTypeName()
+      ) as Interactable;
+    }
+    clayInteractable.enableInstantDrag = true;
+    clayInteractable.keepHoverOnTrigger = true;
+    clayInteractable.targetingMode = 7; // Direct + Indirect + Poke
+    clayInteractable.allowMultipleInteractors = true;
+    this.claySculptInteractable = clayInteractable;
+
+    // 3c. Glowing 3D Sculpt Pinpoint Marker (shows exact spot on clay being pinched/pulled!)
+    this.sculptPinpointObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "SculptPinpointMarker",
+      new vec3(0.0, initH, 0.0)
+    );
+    this.buildStaticDiamondVisual(
+      this.sculptPinpointObj,
+      0.65,
+      OPTICAL_PALETTE.WARN_AMBER
+    );
+    this.sculptPinpointObj.enabled = false;
 
     // 4. GhostProfileMesh (1:1 holographic lathe wireframe: 16 ribs + 6 rings)
     this.ghostProfileMeshObj = this.getOrCreateChildObject(
@@ -467,13 +530,16 @@ export class TerraFormController extends BaseScriptComponent {
     this.heightHandleInteractable = heightBuilt.interactable;
     this.heightHandleBuilder = heightBuilt.meshBuilder;
 
-    // 9. Free 3D PotterHandTool — grab & dip INSIDE from top to push outward, or squeeze OUTSIDE!
-    this.potterToolPlaneX = -5.2;
-    this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
+    // 9. Free 3D PotterHandTool — grab & move anywhere in 3D around/inside/above clay to sculpt manually!
+    this.potterToolLocalPos = new vec3(
+      -5.2,
+      this.clayState.actualHeightCm + 3.2,
+      2.5
+    );
     this.potterHandToolObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "PotterHandTool",
-      new vec3(this.potterToolPlaneX, this.potterToolPlaneY, 0.0)
+      this.potterToolLocalPos
     );
     const handToolBuilt = this.setupDiamondHandle(
       this.potterHandToolObj,
@@ -671,6 +737,47 @@ export class TerraFormController extends BaseScriptComponent {
     }
   }
 
+  private buildStaticDiamondVisual(
+    obj: SceneObject,
+    halfSizeCm: number,
+    color: RgbaColor
+  ): void {
+    const geom = LatheMeshGenerator.buildHandleDiamond(halfSizeCm, color);
+    const builder = new MeshBuilder([
+      { name: "position", components: 3 },
+      { name: "color", components: 4 },
+    ]);
+    builder.topology = MeshTopology.Triangles;
+    builder.indexType = MeshIndexType.UInt16;
+    builder.appendVerticesInterleaved(geom.vertices);
+    builder.appendIndices(geom.indices);
+    const rmv =
+      (obj.getComponent("Component.RenderMeshVisual") as RenderMeshVisual) ||
+      (obj.createComponent("Component.RenderMeshVisual") as RenderMeshVisual);
+    rmv.mesh = builder.getMesh();
+    if (this.wireframeMaterial) {
+      rmv.mainMaterial = this.wireframeMaterial;
+    }
+    builder.updateMesh();
+  }
+
+  private showSculptPinpoint(thetaRad: number, tCenter: number): void {
+    if (!this.sculptPinpointObj) return;
+    const actualH = Math.max(2.0, this.getActualHeightCm());
+    const localY = this.freeformField.computeLocalY(actualH, tCenter, thetaRad);
+    const localR =
+      LatheMeshGenerator.interpolateRadiusCm(this.getActualRadiiMm(), tCenter) +
+      this.freeformField.sampleRadialOffsetCm(tCenter, thetaRad) +
+      0.35;
+    this.sculptPinpointObj
+      .getTransform()
+      .setLocalPosition(
+        new vec3(Math.cos(thetaRad) * localR, localY, Math.sin(thetaRad) * localR)
+      );
+    this.sculptPinpointObj.enabled = true;
+    this.sculptPinpointTimer = 0.45;
+  }
+
   private setupDiamondHandle(
     handleObj: SceneObject,
     halfSizeCm: number,
@@ -725,6 +832,8 @@ export class TerraFormController extends BaseScriptComponent {
         Interactable.getTypeName()
       ) as Interactable;
     }
+    interactable.enableInstantDrag = true;
+    interactable.keepHoverOnTrigger = true;
 
     return { interactable, meshBuilder: builder, meshVisual: rmv };
   }
@@ -878,9 +987,9 @@ export class TerraFormController extends BaseScriptComponent {
         this.playUiClick();
         this.cycleMoistureState();
       });
-      this.studioUI.onApplyFreeformSculpt.add(() => {
+      this.studioUI.onCycleBrushSize.add(() => {
         this.playUiClick();
-        this.applyNextFreeformSculptPreset();
+        this.cycleSculptBrushSize();
       });
       this.studioUI.onOpenDecoration.add(() => {
         this.playUiClick();
@@ -1009,9 +1118,108 @@ export class TerraFormController extends BaseScriptComponent {
       );
     }
 
-    // 4. Free 3D PotterHandTool — TRUE LOCAL 3D ASYMMETRIC SCULPTING!
-    //    Push outward from inside to form a spout/bulge, pinch outside to dent one side,
-    //    or pull UP/DOWN near the rim to sculpt wavy/wiggle/asymmetric heights!
+    // 3b. DIRECT MANUAL CLAY SURFACE PINCH & DRAG (grab ANY exact spot on the clay wall or rim
+    //     and pull outward, push inward, lift up, or dip down with your hand/fingers!)
+    if (this.claySculptInteractable) {
+      this.claySculptInteractable.onDragStart.add(
+        (event: DragInteractorEvent) => {
+          if (!this.wheelCenterAnchor) return;
+          this.ensureThrowingStage();
+          const anchorWorld = this.wheelCenterAnchor
+            .getTransform()
+            .getWorldPosition();
+          const interactor = event.interactor;
+          const hitWorld =
+            interactor.targetHitPosition ||
+            interactor.planecastPoint ||
+            interactor.startPoint;
+          if (hitWorld) {
+            this.activeDirectGrabLocal = hitWorld.sub(anchorWorld);
+            const actualH = Math.max(2.0, this.getActualHeightCm());
+            const rH = Math.sqrt(
+              this.activeDirectGrabLocal.x * this.activeDirectGrabLocal.x +
+                this.activeDirectGrabLocal.z * this.activeDirectGrabLocal.z
+            );
+            const theta =
+              rH > 1e-4
+                ? Math.atan2(
+                    this.activeDirectGrabLocal.z,
+                    this.activeDirectGrabLocal.x
+                  )
+                : Math.PI * 0.5;
+            const t = Math.max(
+              0.05,
+              Math.min(1.0, this.activeDirectGrabLocal.y / actualH)
+            );
+            this.showSculptPinpoint(theta, t);
+          } else {
+            this.activeDirectGrabLocal = null;
+          }
+        }
+      );
+
+      this.claySculptInteractable.onDragUpdate.add(
+        (event: DragInteractorEvent) => {
+          const dragVec = event.dragVector;
+          if (!dragVec || !this.wheelCenterAnchor) return;
+          this.ensureThrowingStage();
+
+          if (!this.activeDirectGrabLocal) {
+            const anchorWorld = this.wheelCenterAnchor
+              .getTransform()
+              .getWorldPosition();
+            const fallbackWorld =
+              event.interactor.targetHitPosition ||
+              event.interactor.planecastPoint ||
+              event.interactor.startPoint;
+            if (!fallbackWorld) return;
+            this.activeDirectGrabLocal = fallbackWorld.sub(anchorWorld);
+          }
+
+          const actualH = Math.max(2.0, this.getActualHeightCm());
+          const pull = this.freeformField.applyDirectSurfacePull(
+            {
+              x: this.activeDirectGrabLocal.x,
+              y: this.activeDirectGrabLocal.y,
+              z: this.activeDirectGrabLocal.z,
+            },
+            { x: dragVec.x, y: dragVec.y, z: dragVec.z },
+            actualH,
+            this.sculptBrushSize,
+            15.0,
+            1.35
+          );
+
+          // Gently track the dragged clay spot so visual pinpoint moves with your hand
+          this.activeDirectGrabLocal = new vec3(
+            this.activeDirectGrabLocal.x + dragVec.x * 0.2,
+            Math.max(
+              0.4,
+              Math.min(
+                actualH + 7.5,
+                this.activeDirectGrabLocal.y + dragVec.y * 0.35
+              )
+            ),
+            this.activeDirectGrabLocal.z + dragVec.z * 0.2
+          );
+
+          const mode: HandContactMode =
+            pull.deltaRadialMm >= 0 ? "INSIDE_PUSH" : "OUTSIDE_SQUEEZE";
+          this.showSculptPinpoint(pull.thetaRad, pull.tCenter);
+          this.updateContactRing(
+            Math.min(actualH, this.activeDirectGrabLocal.y),
+            mode
+          );
+          this.recomputeAndRefreshVisuals();
+        }
+      );
+
+      this.claySculptInteractable.onDragEnd.add(() => {
+        this.activeDirectGrabLocal = null;
+      });
+    }
+
+    // 4. Free 3D PotterHandTool — FULL 3D MANUAL SCULPTING (move anywhere front/back/left/right/inside/rim!)
     if (this.potterHandToolInteractable) {
       this.potterHandToolInteractable.onDragUpdate.add(
         (event: DragInteractorEvent) => {
@@ -1020,32 +1228,26 @@ export class TerraFormController extends BaseScriptComponent {
 
           this.ensureThrowingStage();
 
-          const moveScale = 0.7;
-          const b = this.currentOrbitalBasis;
-          const dragRight = dragVec.x * b.rightX + dragVec.z * b.rightZ;
-          const dx = dragRight * moveScale;
+          const moveScale = 0.78;
+          const dx = dragVec.x * moveScale;
           const dy = dragVec.y * moveScale;
+          const dz = dragVec.z * moveScale;
 
-          const nextX = Math.max(
-            -14.5,
-            Math.min(14.5, this.potterToolPlaneX + dx)
+          this.potterToolLocalPos = new vec3(
+            Math.max(-16.0, Math.min(16.0, this.potterToolLocalPos.x + dx)),
+            Math.max(0.5, Math.min(27.0, this.potterToolLocalPos.y + dy)),
+            Math.max(-16.0, Math.min(16.0, this.potterToolLocalPos.z + dz))
           );
-          const nextY = Math.max(
-            0.6,
-            Math.min(26.5, this.potterToolPlaneY + dy)
-          );
-          this.potterToolPlaneX = nextX;
-          this.potterToolPlaneY = nextY;
           this.syncPotterHandToolTransform();
 
-          // Compute exact 3D local position in WheelCenterAnchor space so walking around the pot sculpts ANY angle!
-          const lx = b.rightX * nextX;
-          const lz = b.rightZ * nextX;
+          const lx = this.potterToolLocalPos.x;
+          const ly = this.potterToolLocalPos.y;
+          const lz = this.potterToolLocalPos.z;
           const rToolCm = Math.sqrt(lx * lx + lz * lz);
           const actualH = Math.max(2.0, this.getActualHeightCm());
-          const tContact = Math.max(0, Math.min(1, nextY / actualH));
+          const tContact = Math.max(0, Math.min(1, ly / actualH));
 
-          if (rToolCm > 0.35 && nextY <= actualH + 5.5) {
+          if (rToolCm > 0.35 && ly <= actualH + 6.5) {
             const toolTheta = Math.atan2(lz, lx);
             const baseWallCm = LatheMeshGenerator.interpolateRadiusCm(
               this.getActualRadiiMm(),
@@ -1055,35 +1257,30 @@ export class TerraFormController extends BaseScriptComponent {
               baseWallCm +
               this.freeformField.sampleRadialOffsetCm(tContact, toolTheta);
 
-            // Outward radial velocity along tool's local radial vector
-            const velX = b.rightX * dx;
-            const velZ = b.rightZ * dx;
-            const radialVelCm = (lx * velX + lz * velZ) / rToolCm;
+            const radialVelCm = (lx * dx + lz * dz) / rToolCm;
             const distToWall = Math.abs(rToolCm - wallRCm);
 
-            if (distToWall <= 3.6) {
+            if (distToWall <= 3.8) {
               const mode: HandContactMode =
                 rToolCm < wallRCm
                   ? "INSIDE_PUSH"
-                  : tContact > 0.78 && Math.abs(dy) > Math.abs(dx)
+                  : tContact > 0.72 && Math.abs(dy) > Math.abs(radialVelCm)
                   ? "TOP_OPEN"
                   : "OUTSIDE_SQUEEZE";
 
-              // Apply localized Gaussian brush (radial push/pinch + rim height lift/dip!)
-              const radialDeltaMm = radialVelCm * 14.0;
-              const rimHeightDeltaCm = tContact >= 0.45 ? dy * 0.95 : 0;
-
+              const brush = SCULPT_BRUSH_CATALOG[this.sculptBrushSize];
               this.freeformField.applyLocalBrush(
                 toolTheta,
                 tContact,
-                radialDeltaMm,
-                rimHeightDeltaCm,
-                0.55,
-                0.28
+                radialVelCm * 14.5,
+                tContact >= 0.28 ? dy * 1.05 : 0,
+                brush.angularSpreadRad,
+                brush.heightSpreadT
               );
 
+              this.showSculptPinpoint(toolTheta, tContact);
               this.updatePotterHandToolVisual(mode);
-              this.updateContactRing(Math.min(actualH, nextY), mode);
+              this.updateContactRing(Math.min(actualH, ly), mode);
               this.recomputeAndRefreshVisuals();
             } else {
               this.updatePotterHandToolVisual("NONE");
@@ -1137,65 +1334,172 @@ export class TerraFormController extends BaseScriptComponent {
   private processRealHandTracking(): void {
     if (!this.handInputData || !this.wheelCenterAnchor) return;
     const anchorWorld = this.wheelCenterAnchor.getTransform().getWorldPosition();
+    const brush = SCULPT_BRUSH_CATALOG[this.sculptBrushSize];
 
     const processOneHand = (
       handSide: "left" | "right",
-      prevLocal: vec3 | null
-    ): vec3 | null => {
+      prevPinchLocal: vec3 | null,
+      prevIndexLocal: vec3 | null,
+      pinchLatch: { theta: number; t: number } | null
+    ): {
+      nextPinchLocal: vec3 | null;
+      nextIndexLocal: vec3 | null;
+      nextLatch: { theta: number; t: number } | null;
+    } => {
       try {
         const hand = this.handInputData!.getHand(handSide);
-        if (!hand || !hand.isTracked()) return null;
+        if (!hand || !hand.isTracked()) {
+          return { nextPinchLocal: null, nextIndexLocal: null, nextLatch: null };
+        }
 
-        // Midpoint of index & thumb tips gives natural potter finger-pad contact point
-        const idxPos = hand.indexTip.position;
-        const thmPos = hand.thumbTip.position;
-        const tipWorld = idxPos.add(thmPos).uniformScale(0.5);
-        const localPos = tipWorld.sub(anchorWorld);
+        const idxWorld = hand.indexTip.position;
+        const thmWorld = hand.thumbTip.position;
+        const pinchWorld = idxWorld.add(thmWorld).uniformScale(0.5);
+        const pinchLocal = pinchWorld.sub(anchorWorld);
+        const indexLocal = idxWorld.sub(anchorWorld);
+        const actualH = Math.max(2.0, this.getActualHeightCm());
 
-        if (prevLocal) {
-          const vel = localPos.sub(prevLocal);
+        const isPinching =
+          typeof (hand as any).isPinching === "function"
+            ? Boolean((hand as any).isPinching())
+            : idxWorld.distance(thmWorld) < 2.6;
+
+        let nextLatch = pinchLatch;
+
+        if (isPinching) {
+          // MODE A: BARE-HAND PINCH & PULL/LIFT/DIP (latches onto exact clay spot!)
           const rHandCm = Math.sqrt(
-            localPos.x * localPos.x + localPos.z * localPos.z
+            pinchLocal.x * pinchLocal.x + pinchLocal.z * pinchLocal.z
           );
-          const actualH = Math.max(2.0, this.getActualHeightCm());
-          const tContact = Math.max(0, Math.min(1, localPos.y / actualH));
+          if (!nextLatch) {
+            if (
+              rHandCm > 0.3 &&
+              pinchLocal.y >= -0.5 &&
+              pinchLocal.y <= actualH + 5.5
+            ) {
+              const theta = Math.atan2(pinchLocal.z, pinchLocal.x);
+              const localMaxH = Math.max(
+                3.0,
+                actualH + this.freeformField.sampleRimHeightOffsetCm(theta)
+              );
+              const t = Math.max(0.05, Math.min(1.0, pinchLocal.y / localMaxH));
+              const wallRCm =
+                LatheMeshGenerator.interpolateRadiusCm(
+                  this.getActualRadiiMm(),
+                  t
+                ) + this.freeformField.sampleRadialOffsetCm(t, theta);
+              if (Math.abs(rHandCm - wallRCm) <= 4.0) {
+                nextLatch = { theta, t };
+              }
+            }
+          }
 
-          if (rHandCm > 0.35 && localPos.y >= 0 && localPos.y <= actualH + 4.5) {
-            const handTheta = Math.atan2(localPos.z, localPos.x);
-            const wallRCm =
-              LatheMeshGenerator.interpolateRadiusCm(
-                this.getActualRadiiMm(),
-                tContact
-              ) + this.freeformField.sampleRadialOffsetCm(tContact, handTheta);
-            const distToWall = Math.abs(rHandCm - wallRCm);
-            const radialVelCm =
-              (localPos.x * vel.x + localPos.z * vel.z) / rHandCm;
-
-            if (distToWall <= 2.6 && (Math.abs(radialVelCm) > 0.03 || Math.abs(vel.y) > 0.03)) {
+          if (nextLatch && prevPinchLocal) {
+            const vel = pinchLocal.sub(prevPinchLocal);
+            const nx = Math.cos(nextLatch.theta);
+            const nz = Math.sin(nextLatch.theta);
+            const radialVelCm = vel.x * nx + vel.z * nz;
+            if (Math.abs(radialVelCm) > 0.015 || Math.abs(vel.y) > 0.015) {
               this.ensureThrowingStage();
               this.freeformField.applyLocalBrush(
-                handTheta,
-                tContact,
+                nextLatch.theta,
+                nextLatch.t,
                 radialVelCm * 14.0,
-                tContact >= 0.45 ? vel.y * 0.95 : 0,
-                0.5,
-                0.26
+                nextLatch.t >= 0.28 ? vel.y * 1.15 : 0,
+                brush.angularSpreadRad,
+                brush.heightSpreadT
               );
-              const mode: HandContactMode =
-                rHandCm < wallRCm ? "INSIDE_PUSH" : "OUTSIDE_SQUEEZE";
-              this.updateContactRing(Math.min(actualH, localPos.y), mode);
+              this.showSculptPinpoint(nextLatch.theta, nextLatch.t);
+              this.updateContactRing(
+                Math.min(actualH, pinchLocal.y),
+                radialVelCm >= 0 ? "INSIDE_PUSH" : "OUTSIDE_SQUEEZE"
+              );
               this.recomputeAndRefreshVisuals();
             }
           }
+        } else {
+          // MODE B: OPEN-FINGER DIRECT POKE / PUSH / PRESS (index fingertip directly touches clay)
+          nextLatch = null;
+          if (prevIndexLocal) {
+            const vel = indexLocal.sub(prevIndexLocal);
+            const rTipCm = Math.sqrt(
+              indexLocal.x * indexLocal.x + indexLocal.z * indexLocal.z
+            );
+            if (
+              rTipCm > 0.35 &&
+              indexLocal.y >= 0 &&
+              indexLocal.y <= actualH + 5.0
+            ) {
+              const tipTheta = Math.atan2(indexLocal.z, indexLocal.x);
+              const localMaxH = Math.max(
+                3.0,
+                actualH + this.freeformField.sampleRimHeightOffsetCm(tipTheta)
+              );
+              const tContact = Math.max(
+                0.05,
+                Math.min(1.0, indexLocal.y / localMaxH)
+              );
+              const wallRCm =
+                LatheMeshGenerator.interpolateRadiusCm(
+                  this.getActualRadiiMm(),
+                  tContact
+                ) + this.freeformField.sampleRadialOffsetCm(tContact, tipTheta);
+              const distToWall = Math.abs(rTipCm - wallRCm);
+              const radialVelCm =
+                (indexLocal.x * vel.x + indexLocal.z * vel.z) / rTipCm;
+
+              if (
+                distToWall <= 2.4 &&
+                (Math.abs(radialVelCm) > 0.025 || Math.abs(vel.y) > 0.025)
+              ) {
+                this.ensureThrowingStage();
+                this.freeformField.applyLocalBrush(
+                  tipTheta,
+                  tContact,
+                  radialVelCm * 13.5,
+                  tContact >= 0.28 ? vel.y * 1.0 : 0,
+                  brush.angularSpreadRad,
+                  brush.heightSpreadT
+                );
+                this.showSculptPinpoint(tipTheta, tContact);
+                const mode: HandContactMode =
+                  rTipCm < wallRCm ? "INSIDE_PUSH" : "OUTSIDE_SQUEEZE";
+                this.updateContactRing(Math.min(actualH, indexLocal.y), mode);
+                this.recomputeAndRefreshVisuals();
+              }
+            }
+          }
         }
-        return localPos;
+
+        return {
+          nextPinchLocal: pinchLocal,
+          nextIndexLocal: indexLocal,
+          nextLatch,
+        };
       } catch (_e) {
-        return null;
+        return { nextPinchLocal: null, nextIndexLocal: null, nextLatch: null };
       }
     };
 
-    this.prevLeftHandLocal = processOneHand("left", this.prevLeftHandLocal);
-    this.prevRightHandLocal = processOneHand("right", this.prevRightHandLocal);
+    const leftRes = processOneHand(
+      "left",
+      this.prevLeftHandLocal,
+      this.prevLeftIndexLocal,
+      this.leftHandPinchGrab
+    );
+    this.prevLeftHandLocal = leftRes.nextPinchLocal;
+    this.prevLeftIndexLocal = leftRes.nextIndexLocal;
+    this.leftHandPinchGrab = leftRes.nextLatch;
+
+    const rightRes = processOneHand(
+      "right",
+      this.prevRightHandLocal,
+      this.prevRightIndexLocal,
+      this.rightHandPinchGrab
+    );
+    this.prevRightHandLocal = rightRes.nextPinchLocal;
+    this.prevRightIndexLocal = rightRes.nextIndexLocal;
+    this.rightHandPinchGrab = rightRes.nextLatch;
   }
 
   private playUiClick(): void {
@@ -1350,15 +1654,8 @@ export class TerraFormController extends BaseScriptComponent {
     this.recomputeAndRefreshVisuals();
   }
 
-  public applyNextFreeformSculptPreset(): void {
-    this.ensureThrowingStage();
-    const b = this.currentOrbitalBasis;
-    const facingTheta = Math.atan2(b.toCamZ, b.toCamX);
-    this.freeformField.applyPreset(this.nextFreeformPreset, facingTheta);
-    this.nextFreeformPreset = nextInOrder(
-      FREEFORM_PRESET_ORDER,
-      this.nextFreeformPreset
-    );
+  public cycleSculptBrushSize(): void {
+    this.sculptBrushSize = nextInOrder(SCULPT_BRUSH_ORDER, this.sculptBrushSize);
     this.recomputeAndRefreshVisuals();
   }
 
@@ -1570,8 +1867,11 @@ export class TerraFormController extends BaseScriptComponent {
     );
     this.tealStableSeconds = 0;
     this.chimePlayedForCurrentHold = false;
-    this.potterToolPlaneX = -5.2;
-    this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
+    this.potterToolLocalPos = new vec3(
+      -5.2,
+      this.clayState.actualHeightCm + 3.2,
+      2.5
+    );
     this.syncPotterHandToolTransform();
     this.recomputeAndRefreshVisuals();
   }
@@ -1621,19 +1921,27 @@ export class TerraFormController extends BaseScriptComponent {
   public resetClayDeformation(): void {
     // Drop a fresh raw rounded Globe Piece clay mound on the banding board!
     this.freeformField.reset();
-    this.nextFreeformPreset = "WIGGLE_RIM";
+    this.activeDirectGrabLocal = null;
+    this.leftHandPinchGrab = null;
+    this.rightHandPinchGrab = null;
     this.clayState = ClayStudioFlowEngine.buildGlobePieceState(
       this.wetTarget.wetRadiiMm,
       this.selectedClayMass
     );
     this.tealStableSeconds = 0;
     this.chimePlayedForCurrentHold = false;
-    this.potterToolPlaneX = -5.2;
-    this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
+    this.potterToolLocalPos = new vec3(
+      -5.2,
+      this.clayState.actualHeightCm + 3.2,
+      2.5
+    );
     this.syncPotterHandToolTransform();
     this.updatePotterHandToolVisual("NONE");
     if (this.contactRingObj) {
       this.contactRingObj.enabled = false;
+    }
+    if (this.sculptPinpointObj) {
+      this.sculptPinpointObj.enabled = false;
     }
     this.recomputeAndRefreshVisuals();
   }
@@ -1693,11 +2001,17 @@ export class TerraFormController extends BaseScriptComponent {
     // 2. Real SPECS bare-hand sculpting (inside push & outside squeeze)
     this.processRealHandTracking();
 
-    // 3. Auto-hide SculptContactRing briefly after hand leaves clay
+    // 3. Auto-hide SculptContactRing & SculptPinpointMarker briefly after hand leaves clay
     if (this.contactRingFadeTimer > 0) {
       this.contactRingFadeTimer -= dt;
       if (this.contactRingFadeTimer <= 0 && this.contactRingObj) {
         this.contactRingObj.enabled = false;
+      }
+    }
+    if (this.sculptPinpointTimer > 0) {
+      this.sculptPinpointTimer -= dt;
+      if (this.sculptPinpointTimer <= 0 && this.sculptPinpointObj) {
+        this.sculptPinpointObj.enabled = false;
       }
     }
 
@@ -1745,9 +2059,9 @@ export class TerraFormController extends BaseScriptComponent {
     const maxVesselRadiusCm = Math.max(...actualRadiiMm) / 10.0;
     const panelY = anchorPos.y + Math.max(11.5, actualHeightCm * 0.65);
 
-    // 1. StudioCardAnchor orbits cleanly OUTSIDE the clay & zone handles (never blocks vessel!)
+    // 1. StudioCardAnchor orbits cleanly OUTSIDE the clay & zone handles and stays inside SPECS 37 deg FOV
     if (this.studioCardAnchor) {
-      const cardRight = Math.max(14.2, maxVesselRadiusCm + 6.0);
+      const cardRight = Math.max(13.2, maxVesselRadiusCm + 5.1);
       const cardBack = 3.5;
       const cardWorldPos = new vec3(
         anchorPos.x + basis.rightX * cardRight - basis.toCamX * cardBack,
@@ -1826,13 +2140,7 @@ export class TerraFormController extends BaseScriptComponent {
     const b = this.currentOrbitalBasis;
     this.potterHandToolObj
       .getTransform()
-      .setLocalPosition(
-        new vec3(
-          b.rightX * this.potterToolPlaneX,
-          this.potterToolPlaneY,
-          b.rightZ * this.potterToolPlaneX
-        )
-      );
+      .setLocalPosition(this.potterToolLocalPos);
     this.potterHandToolObj
       .getTransform()
       .setLocalRotation(quat.fromEulerAngles(0, b.yawRad, 0));
@@ -1978,6 +2286,17 @@ export class TerraFormController extends BaseScriptComponent {
       this.recolorDiamondHandle(this.heightHandleBuilder, 1.1, heightColor);
     }
 
+    // Keep direct pinch/grab-anywhere-on-clay collider matched to current vessel dimensions
+    if (this.claySculptColliderObj && this.claySculptCylinder) {
+      const maxActualRadiusCm = Math.max(...actualRadiiMm) / 10.0;
+      const colH = Math.max(6.0, actualHeightCm + 2.0);
+      this.claySculptCylinder.radius = Math.max(3.5, maxActualRadiusCm + 0.45);
+      this.claySculptCylinder.length = colH;
+      this.claySculptColliderObj
+        .getTransform()
+        .setLocalPosition(new vec3(0.0, colH * 0.5, 0.0));
+    }
+
     // Update UIKit Studio Card HUD with 5-stage Ceramic Materials Workflow
     const claySpec = CLAY_BODY_CATALOG[this.selectedClayBody];
     const techSpec = HAND_BUILDING_CATALOG[this.handBuildingParams.technique];
@@ -2033,7 +2352,7 @@ export class TerraFormController extends BaseScriptComponent {
         `Tech: ${techSpec.name}`,
         `State: ${this.handBuildingParams.moistureState}`,
         `${techSpec.name} · ${this.handBuildingParams.moistureState}`,
-        FreeformClayField.getPresetLabel(this.nextFreeformPreset)
+        FreeformClayField.getBrushLabel(this.sculptBrushSize)
       );
     }
 

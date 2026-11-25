@@ -1,30 +1,66 @@
-export type FreeformSculptPreset =
-  | "WIGGLE_RIM"
-  | "PINCH_SPOUT"
-  | "ASYM_DIP"
-  | "LOTUS_WAVE"
-  | "SMOOTH";
+export type SculptBrushSize = "FINE" | "MEDIUM" | "WIDE";
 
-export const FREEFORM_PRESET_ORDER: readonly FreeformSculptPreset[] = [
-  "WIGGLE_RIM",
-  "PINCH_SPOUT",
-  "ASYM_DIP",
-  "LOTUS_WAVE",
-  "SMOOTH",
+export const SCULPT_BRUSH_ORDER: readonly SculptBrushSize[] = [
+  "MEDIUM",
+  "FINE",
+  "WIDE",
 ];
 
+export interface SculptBrushParams {
+  readonly size: SculptBrushSize;
+  readonly label: string;
+  readonly angularSpreadRad: number;
+  readonly heightSpreadT: number;
+}
+
+export const SCULPT_BRUSH_CATALOG: Readonly<
+  Record<SculptBrushSize, SculptBrushParams>
+> = {
+  FINE: {
+    size: "FINE",
+    label: "Brush: Fine (Jari)",
+    angularSpreadRad: 0.28,
+    heightSpreadT: 0.18,
+  },
+  MEDIUM: {
+    size: "MEDIUM",
+    label: "Brush: Medium",
+    angularSpreadRad: 0.48,
+    heightSpreadT: 0.26,
+  },
+  WIDE: {
+    size: "WIDE",
+    label: "Brush: Wide (Tangan)",
+    angularSpreadRad: 0.78,
+    heightSpreadT: 0.36,
+  },
+};
+
+export interface Vec3Like {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+export interface DirectPullResult {
+  readonly thetaRad: number;
+  readonly tCenter: number;
+  readonly deltaRadialMm: number;
+  readonly deltaRimHeightCm: number;
+}
+
 /**
- * Pure TypeScript 2D Polar Freeform Sculpting Field for asymmetric Hand-Building clay.
+ * Pure TypeScript 2D Polar Freeform Sculpting Field for 100% manual Hand-Building clay.
  * Stores per-(angle, height) radial displacements (mm) and per-angle rim height offsets (cm),
- * enabling non-symmetric spouts, wavy/wiggle rims, asymmetric dipped walls, lotus petals,
- * and true localized 3D finger/hand-tool pinching anywhere around the vessel.
+ * enabling users to freely grab, pinch, pull out, push in, lift up, or dip down ANY exact spot
+ * on the clay vessel manually with their hands or fingers.
  */
 export class FreeformClayField {
-  public static readonly ANGULAR_COLS = 24;
-  public static readonly HEIGHT_ROWS = 9;
-  public static readonly MAX_RADIAL_OFFSET_MM = 38.0;
-  public static readonly MIN_RIM_HEIGHT_OFFSET_CM = -5.5;
-  public static readonly MAX_RIM_HEIGHT_OFFSET_CM = 7.0;
+  public static readonly ANGULAR_COLS = 32;
+  public static readonly HEIGHT_ROWS = 11;
+  public static readonly MAX_RADIAL_OFFSET_MM = 45.0;
+  public static readonly MIN_RIM_HEIGHT_OFFSET_CM = -6.5;
+  public static readonly MAX_RIM_HEIGHT_OFFSET_CM = 9.0;
 
   /** Flattened [col * HEIGHT_ROWS + row] radial offset in mm */
   private readonly radialOffsetsMm: number[];
@@ -108,7 +144,7 @@ export class FreeformClayField {
 
   /**
    * Computes the local height (cm) of a vertex at normalized height t and angle thetaRad,
-   * smoothly scaling the vertical rim wave from 0 at the base (y=0) to full amplitude at the rim (t=1).
+   * smoothly scaling the vertical rim contour from 0 at the base (y=0) to full amplitude at the rim (t=1).
    */
   public computeLocalY(
     baseHeightCm: number,
@@ -116,22 +152,22 @@ export class FreeformClayField {
     thetaRad: number
   ): number {
     const rimDelta = this.sampleRimHeightOffsetCm(thetaRad);
-    const localMaxH = Math.max(3.5, baseHeightCm + rimDelta);
+    const localMaxH = Math.max(3.0, baseHeightCm + rimDelta);
     return Math.max(0, Math.min(1, t)) * localMaxH;
   }
 
   /**
-   * Applies a localized 3D Gaussian clay sculpting brush at angle `thetaRad` and normalized height `tCenter`.
-   * - `deltaRadialMm`: pushes clay locally outward (+) or pinches inward (-) at that exact spot.
-   * - `deltaRimHeightCm`: pulls that local section of the rim upward (+) or dips it downward (-).
+   * Applies a localized 3D Gaussian manual clay brush at angle `thetaRad` and normalized height `tCenter`.
+   * - `deltaRadialMm`: pulls clay locally outward (+) or pushes/pinches inward (-) at that exact spot.
+   * - `deltaRimHeightCm`: pulls that local section of the rim/wall upward (+) or dips it downward (-).
    */
   public applyLocalBrush(
     thetaRad: number,
     tCenter: number,
     deltaRadialMm: number,
     deltaRimHeightCm: number,
-    angularSpreadRad: number = 0.58,
-    heightSpreadT: number = 0.28
+    angularSpreadRad: number = 0.48,
+    heightSpreadT: number = 0.26
   ): void {
     const cols = FreeformClayField.ANGULAR_COLS;
     const rows = FreeformClayField.HEIGHT_ROWS;
@@ -142,18 +178,18 @@ export class FreeformClayField {
       const colTheta = (c / cols) * Math.PI * 2.0;
       const dTheta = FreeformClayField.shortestAngleDiff(colTheta, thetaRad);
       const wAngle = Math.exp(-(dTheta * dTheta) * inv2SigA);
-      if (wAngle < 0.02) continue;
+      if (wAngle < 0.015) continue;
 
-      // Local radial wall push/pinch
+      // Local radial wall pull/push
       if (Math.abs(deltaRadialMm) > 1e-4) {
         for (let r = 0; r < rows; r++) {
           const rt = r / (rows - 1);
           // Anchor bottom foot (r=0) slightly more firmly so clay stays seated on workboard
-          const baseAnchor = r === 0 ? 0.35 : 1.0;
+          const baseAnchor = r === 0 ? 0.3 : 1.0;
           const dt = rt - tCenter;
           const wHeight = Math.exp(-(dt * dt) * inv2SigH);
           const w = wAngle * wHeight * baseAnchor;
-          if (w < 0.02) continue;
+          if (w < 0.015) continue;
 
           const idx = c * rows + r;
           const next = this.radialOffsetsMm[idx] + deltaRadialMm * w;
@@ -164,9 +200,9 @@ export class FreeformClayField {
         }
       }
 
-      // Local rim height lift / dip (strongest when touching upper half / rim)
-      if (Math.abs(deltaRimHeightCm) > 1e-4 && tCenter >= 0.45) {
-        const rimWeight = Math.min(1.0, (tCenter - 0.35) / 0.5);
+      // Local rim height lift / dip (responsive across upper 72% of clay wall and rim!)
+      if (Math.abs(deltaRimHeightCm) > 1e-4 && tCenter >= 0.28) {
+        const rimWeight = Math.min(1.0, (tCenter - 0.22) / 0.45);
         const nextH =
           this.rimHeightOffsetsCm[c] + deltaRimHeightCm * wAngle * rimWeight;
         this.rimHeightOffsetsCm[c] = Math.max(
@@ -178,124 +214,58 @@ export class FreeformClayField {
   }
 
   /**
-   * Photo 2 & 3 style: Organic "wiggle-wiggle" hand-pinched wavy rim & gently undulating upper wall.
-   * Additive so repeated clicks deepen the wave, and user can freely hand-sculpt on top!
+   * Direct manual pinch-and-drag sculpting on any exact 3D point of the clay surface.
+   * - Dragging away from the center axis pulls clay outward (e.g., forming a spout or bulge).
+   * - Dragging toward the center axis pushes/indents clay inward (e.g., pinching a crease or wiggle).
+   * - Dragging upward lifts that exact rim/wall section; dragging downward dips/pushes it down!
    */
-  public applyWiggleRim(
-    lobeCount: number = 6,
-    radialWaveMm: number = 7.5,
-    verticalWaveCm: number = 1.15
-  ): void {
-    const cols = FreeformClayField.ANGULAR_COLS;
-    const rows = FreeformClayField.HEIGHT_ROWS;
-    for (let c = 0; c < cols; c++) {
-      const theta = (c / cols) * Math.PI * 2.0;
-      const wave =
-        Math.sin(theta * lobeCount) * 0.72 +
-        Math.cos(theta * (lobeCount - 2) + 0.9) * 0.28;
+  public applyDirectSurfacePull(
+    grabLocal: Vec3Like,
+    dragDeltaCm: Vec3Like,
+    actualHeightCm: number,
+    brushSize: SculptBrushSize = "MEDIUM",
+    radialGain: number = 11.5,
+    verticalGain: number = 1.1
+  ): DirectPullResult {
+    const brush = SCULPT_BRUSH_CATALOG[brushSize];
+    const rHorizontal = Math.sqrt(
+      grabLocal.x * grabLocal.x + grabLocal.z * grabLocal.z
+    );
+    const thetaRad =
+      rHorizontal > 1e-4 ? Math.atan2(grabLocal.z, grabLocal.x) : Math.PI * 0.5;
+    const localMaxH = Math.max(
+      3.0,
+      actualHeightCm + this.sampleRimHeightOffsetCm(thetaRad)
+    );
+    const tCenter = Math.max(0.05, Math.min(1.0, grabLocal.y / localMaxH));
 
-      this.rimHeightOffsetsCm[c] = Math.max(
-        FreeformClayField.MIN_RIM_HEIGHT_OFFSET_CM,
-        Math.min(
-          FreeformClayField.MAX_RIM_HEIGHT_OFFSET_CM,
-          this.rimHeightOffsetsCm[c] + wave * verticalWaveCm
-        )
-      );
+    // Outward radial unit vector at the grabbed clay point
+    const nx = Math.cos(thetaRad);
+    const nz = Math.sin(thetaRad);
+    const radialDeltaCm = dragDeltaCm.x * nx + dragDeltaCm.z * nz;
 
-      for (let r = 1; r < rows; r++) {
-        const rt = r / (rows - 1);
-        const topBias = Math.pow(rt, 1.5);
-        const idx = c * rows + r;
-        const next = this.radialOffsetsMm[idx] + wave * radialWaveMm * topBias;
-        this.radialOffsetsMm[idx] = Math.max(
-          -FreeformClayField.MAX_RADIAL_OFFSET_MM,
-          Math.min(FreeformClayField.MAX_RADIAL_OFFSET_MM, next)
-        );
-      }
-    }
+    const deltaRadialMm = radialDeltaCm * radialGain;
+    const deltaRimHeightCm = dragDeltaCm.y * verticalGain;
+
+    this.applyLocalBrush(
+      thetaRad,
+      tCenter,
+      deltaRadialMm,
+      deltaRimHeightCm,
+      brush.angularSpreadRad,
+      brush.heightSpreadT
+    );
+
+    return {
+      thetaRad,
+      tCenter,
+      deltaRadialMm,
+      deltaRimHeightCm,
+    };
   }
 
   /**
-   * Photo 3 style: Pulls an ergonomic pouring spout on the facing angle `spoutThetaRad`,
-   * gently pinching the neck beside the spout and lifting the spout lip.
-   */
-  public applyPinchSpout(spoutThetaRad: number = Math.PI * 0.5): void {
-    // Pull spout channel outward & slightly up
-    this.applyLocalBrush(spoutThetaRad, 0.94, 18.0, 1.4, 0.28, 0.32);
-    // Pinch cheek indents right beside the spout to form crisp pouring lip
-    this.applyLocalBrush(spoutThetaRad + 0.42, 0.88, -7.0, -0.3, 0.24, 0.26);
-    this.applyLocalBrush(spoutThetaRad - 0.42, 0.88, -7.0, -0.3, 0.24, 0.26);
-  }
-
-  /**
-   * Photo 1 & 4 style: Dramatic asymmetric sculptural vessel — sweeping dip/cutout on one side
-   * and tall organic crest curving up on the opposite side.
-   */
-  public applyAsymmetricDip(dipThetaRad: number = Math.PI * 0.5): void {
-    const cols = FreeformClayField.ANGULAR_COLS;
-    const rows = FreeformClayField.HEIGHT_ROWS;
-    for (let c = 0; c < cols; c++) {
-      const theta = (c / cols) * Math.PI * 2.0;
-      const dDip = FreeformClayField.shortestAngleDiff(theta, dipThetaRad);
-      // Smooth asymmetric dip at dipThetaRad, soaring crest opposite
-      const dipFactor = Math.cos(dDip); // +1 at dip, -1 opposite
-      const heightShift = -dipFactor * 3.2 - Math.exp(-(dDip * dDip) / 0.22) * 1.6;
-      this.rimHeightOffsetsCm[c] = Math.max(
-        FreeformClayField.MIN_RIM_HEIGHT_OFFSET_CM,
-        Math.min(
-          FreeformClayField.MAX_RIM_HEIGHT_OFFSET_CM,
-          this.rimHeightOffsetsCm[c] + heightShift
-        )
-      );
-      // Slight sculptural oval flare
-      const ovalMm = Math.cos(dDip * 2.0) * 8.0;
-      for (let r = 1; r < rows; r++) {
-        const rt = r / (rows - 1);
-        const idx = c * rows + r;
-        const next = this.radialOffsetsMm[idx] + ovalMm * rt;
-        this.radialOffsetsMm[idx] = Math.max(
-          -FreeformClayField.MAX_RADIAL_OFFSET_MM,
-          Math.min(FreeformClayField.MAX_RADIAL_OFFSET_MM, next)
-        );
-      }
-    }
-  }
-
-  /**
-   * Photo 5 style: Sculptural undulating lotus/petal candle-holder rim with 5 dramatic
-   * curved high/low folded peaks and valleys.
-   */
-  public applyLotusWave(petals: number = 5): void {
-    const cols = FreeformClayField.ANGULAR_COLS;
-    const rows = FreeformClayField.HEIGHT_ROWS;
-    for (let c = 0; c < cols; c++) {
-      const theta = (c / cols) * Math.PI * 2.0;
-      const petalWave = Math.sin(theta * petals);
-      // High peaks & deep sculpted U-valleys
-      const hDelta = petalWave * 2.8;
-      this.rimHeightOffsetsCm[c] = Math.max(
-        FreeformClayField.MIN_RIM_HEIGHT_OFFSET_CM,
-        Math.min(
-          FreeformClayField.MAX_RIM_HEIGHT_OFFSET_CM,
-          this.rimHeightOffsetsCm[c] + hDelta
-        )
-      );
-      // Fold petals slightly outward at peaks and tucked inward at valleys
-      for (let r = 1; r < rows; r++) {
-        const rt = r / (rows - 1);
-        const idx = c * rows + r;
-        const radialFold = petalWave * 10.5 * Math.pow(rt, 1.3);
-        const next = this.radialOffsetsMm[idx] + radialFold;
-        this.radialOffsetsMm[idx] = Math.max(
-          -FreeformClayField.MAX_RADIAL_OFFSET_MM,
-          Math.min(FreeformClayField.MAX_RADIAL_OFFSET_MM, next)
-        );
-      }
-    }
-  }
-
-  /**
-   * Relaxes/smooths freeform clay peaks & dents like wiping with a potter's damp sponge/rib.
+   * Relaxes/smooths clay peaks & dents gently (like wiping with a damp potter's sponge).
    */
   public smooth(strength: number = 0.45): void {
     const cols = FreeformClayField.ANGULAR_COLS;
@@ -312,7 +282,7 @@ export class FreeformClayField {
           this.rimHeightOffsetsCm[cNext]) /
         4.0;
       nextH[c] =
-        (this.rimHeightOffsetsCm[c] * (1 - strength) + avgH * strength) * 0.82;
+        (this.rimHeightOffsetsCm[c] * (1 - strength) + avgH * strength) * 0.85;
 
       for (let r = 0; r < rows; r++) {
         const idx = c * rows + r;
@@ -322,7 +292,7 @@ export class FreeformClayField {
             this.radialOffsetsMm[cNext * rows + r]) /
           4.0;
         nextR[idx] =
-          (this.radialOffsetsMm[idx] * (1 - strength) + avgR * strength) * 0.82;
+          (this.radialOffsetsMm[idx] * (1 - strength) + avgR * strength) * 0.85;
       }
     }
 
@@ -334,42 +304,8 @@ export class FreeformClayField {
     }
   }
 
-  public applyPreset(
-    preset: FreeformSculptPreset,
-    facingThetaRad: number = Math.PI * 0.5
-  ): void {
-    switch (preset) {
-      case "WIGGLE_RIM":
-        this.applyWiggleRim();
-        break;
-      case "PINCH_SPOUT":
-        this.applyPinchSpout(facingThetaRad);
-        break;
-      case "ASYM_DIP":
-        this.applyAsymmetricDip(facingThetaRad);
-        break;
-      case "LOTUS_WAVE":
-        this.applyLotusWave();
-        break;
-      case "SMOOTH":
-        this.smooth(0.55);
-        break;
-    }
-  }
-
-  public static getPresetLabel(preset: FreeformSculptPreset): string {
-    switch (preset) {
-      case "WIGGLE_RIM":
-        return "Sculpt: +Wiggle Rim";
-      case "PINCH_SPOUT":
-        return "Sculpt: +Spout";
-      case "ASYM_DIP":
-        return "Sculpt: +Asym Dip";
-      case "LOTUS_WAVE":
-        return "Sculpt: +Lotus Wave";
-      case "SMOOTH":
-        return "Sculpt: Smooth Clay";
-    }
+  public static getBrushLabel(size: SculptBrushSize): string {
+    return SCULPT_BRUSH_CATALOG[size].label;
   }
 
   private static shortestAngleDiff(a: number, b: number): number {

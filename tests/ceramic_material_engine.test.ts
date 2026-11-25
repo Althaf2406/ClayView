@@ -484,33 +484,38 @@ describe("Ceramic Material Science & Compatibility Engine", () => {
       assert.equal(Math.abs(backRimLiftCm) < 0.05, true);
     });
 
-    test("organic presets (Wiggle Rim, Spout, Asym Dip, Lotus Wave, Smooth) build solid asymmetric 3D meshes", () => {
+    test("applyDirectSurfacePull lets user manually pull a spout, dip one side, and sculpt wiggle rims by hand", () => {
       const field = new FreeformClayField();
-      field.applyWiggleRim();
-      const maxH = Math.max(
-        field.computeLocalY(12, 1, 0),
-        field.computeLocalY(12, 1, Math.PI / 6),
-        field.computeLocalY(12, 1, Math.PI / 3)
-      );
-      const minH = Math.min(
-        field.computeLocalY(12, 1, 0),
-        field.computeLocalY(12, 1, Math.PI / 6),
-        field.computeLocalY(12, 1, Math.PI / 3)
-      );
-      assert.equal(maxH > minH, true);
 
-      field.reset();
-      field.applyAsymmetricDip(0);
-      // Dip at angle 0 is lower than opposite crest at PI
+      // 1. User pinches right side (x=+8, y=11, z=0) and pulls OUTWARD (+2.5 cm) and UP (+2.0 cm) -> pouring spout!
+      const spoutPull = field.applyDirectSurfacePull(
+        { x: 8.0, y: 11.0, z: 0.0 },
+        { x: 2.5, y: 2.0, z: 0.0 },
+        12.0,
+        "FINE"
+      );
+      assert.equal(spoutPull.deltaRadialMm > 20, true);
+      assert.equal(spoutPull.deltaRimHeightCm > 1.5, true);
+      assert.equal(field.sampleRadialOffsetCm(0.92, 0) > 1.5, true);
+      // Opposite left side (PI) stays completely untouched!
+      assert.equal(Math.abs(field.sampleRadialOffsetCm(0.92, Math.PI)) < 0.05, true);
+
+      // 2. User pinches front rim (x=0, y=11.5, z=+8) and pushes DOWN (-3.0 cm) -> asymmetric dip!
+      field.applyDirectSurfacePull(
+        { x: 0.0, y: 11.5, z: 8.0 },
+        { x: 0.0, y: -3.0, z: 0.0 },
+        12.0,
+        "MEDIUM"
+      );
       assert.equal(
-        field.computeLocalY(12, 1, 0) < field.computeLocalY(12, 1, Math.PI),
+        field.computeLocalY(12.0, 1.0, Math.PI / 2) <
+          field.computeLocalY(12.0, 1.0, 0),
         true
       );
 
-      field.reset();
-      field.applyLotusWave(5);
+      // 3. Build solid double-walled 3D mesh from purely manual hand strokes
       const mesh = LatheMeshGenerator.buildSolidVessel(
-        12,
+        12.0,
         [45, 70, 85, 77, 85],
         undefined,
         32,
@@ -523,10 +528,11 @@ describe("Ceramic Material Science & Compatibility Engine", () => {
       assert.equal(mesh.triangleCount > 1000, true);
       assert.equal(mesh.vertices.length, mesh.vertexCount * 10);
 
-      const beforePeak = Math.abs(field.sampleRimHeightOffsetCm(Math.PI / 10));
+      // 4. Damp-sponge smooth relaxes manual peaks
+      const beforeRim = Math.abs(field.sampleRimHeightOffsetCm(Math.PI / 2));
       field.smooth(0.6);
-      const afterPeak = Math.abs(field.sampleRimHeightOffsetCm(Math.PI / 10));
-      assert.equal(afterPeak < beforePeak, true);
+      const afterRim = Math.abs(field.sampleRimHeightOffsetCm(Math.PI / 2));
+      assert.equal(afterRim < beforeRim, true);
     });
   });
 });
