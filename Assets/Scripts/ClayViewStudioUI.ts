@@ -66,9 +66,9 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   @ui.separator
   @ui.group_start("Settings")
   @input
-  @hint("Calibrated card width in cm (stays well inside SPECS +/-20.5cm horizontal FOV)")
+  @hint("Calibrated card width in cm (compact so it never overlaps clay or clips FOV)")
   @widget(new SliderWidget(7.0, 11.0, 0.5))
-  public cardWidthCm: number = 8.2;
+  public cardWidthCm: number = 7.6;
 
   @input
   @hint("Inner horizontal/vertical padding in cm")

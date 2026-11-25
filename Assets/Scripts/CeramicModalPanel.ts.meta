@@ -45,4 +45,4 @@
   InputLines:
     - '// @ui {"widget":"label", "label":"<span style=\"color: #4AF2FF;\">CeramicModalPanel — Decoration / Firing / Result Modal</span>"}'
     - '// @ui {"widget":"separator"}'
-    - '// @input float panelWidthCm = 8.6 {"hint":"Calibrated modal width in cm for SPECS additive FOV", "widget":"slider", "min":8, "max":12, "step":0.5}'
+    - '// @input float panelWidthCm = 8 {"hint":"Calibrated modal width in cm for SPECS additive FOV", "widget":"slider", "min":7, "max":12, "step":0.5}'

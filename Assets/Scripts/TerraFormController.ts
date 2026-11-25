@@ -1658,46 +1658,52 @@ export class TerraFormController extends BaseScriptComponent {
 
     const facingQuat = quat.fromEulerAngles(0, basis.yawRad, 0);
 
-    // 1. StudioCardAnchor orbits to user's right side safely inside SPECS 37-deg FOV
+    const actualRadiiMm = this.getActualRadiiMm();
+    const actualHeightCm = this.getActualHeightCm();
+    const maxVesselRadiusCm = Math.max(...actualRadiiMm) / 10.0;
+    const panelY = anchorPos.y + Math.max(11.5, actualHeightCm * 0.65);
+
+    // 1. StudioCardAnchor orbits cleanly OUTSIDE the clay & zone handles (never blocks vessel!)
     if (this.studioCardAnchor) {
-      const cardRight = 11.4;
-      const cardBack = 1.5;
+      const cardRight = Math.max(14.2, maxVesselRadiusCm + 6.0);
+      const cardBack = 3.5;
       const cardWorldPos = new vec3(
         anchorPos.x + basis.rightX * cardRight - basis.toCamX * cardBack,
-        anchorPos.y + 11.5,
+        panelY,
         anchorPos.z + basis.rightZ * cardRight - basis.toCamZ * cardBack
       );
       this.studioCardAnchor.getTransform().setWorldPosition(cardWorldPos);
       this.studioCardAnchor
         .getTransform()
         .setWorldRotation(
-          quat.fromEulerAngles(0, basis.yawRad - 15 * MathUtils.DegToRad, 0)
+          quat.fromEulerAngles(0, basis.yawRad - 16 * MathUtils.DegToRad, 0)
         );
     }
 
-    // 1b. CeramicModalAnchor orbits to user's left side safely inside SPECS 37-deg FOV
+    // 1b. CeramicModalAnchor orbits cleanly to user's left side outside the clay
     if (this.modalAnchor) {
-      const modalLeft = 11.2;
-      const modalBack = 1.0;
+      const modalLeft = Math.max(14.0, maxVesselRadiusCm + 5.8);
+      const modalBack = 2.5;
       const modalWorldPos = new vec3(
         anchorPos.x - basis.rightX * modalLeft - basis.toCamX * modalBack,
-        anchorPos.y + 11.5,
+        panelY,
         anchorPos.z - basis.rightZ * modalLeft - basis.toCamZ * modalBack
       );
       this.modalAnchor.getTransform().setWorldPosition(modalWorldPos);
       this.modalAnchor
         .getTransform()
         .setWorldRotation(
-          quat.fromEulerAngles(0, basis.yawRad + 15 * MathUtils.DegToRad, 0)
+          quat.fromEulerAngles(0, basis.yawRad + 16 * MathUtils.DegToRad, 0)
         );
     }
 
-    // 2. CaliperGaugeLine orbits to user's left side and faces camera
+    // 2. CaliperGaugeLine orbits to user's left side outside vessel silhouette
     if (this.caliperGaugeLineObj) {
+      const caliperLeft = Math.max(11.0, maxVesselRadiusCm + 2.4);
       this.caliperGaugeLineObj
         .getTransform()
         .setLocalPosition(
-          new vec3(-basis.rightX * 11.0, 0.0, -basis.rightZ * 11.0)
+          new vec3(-basis.rightX * caliperLeft, 0.0, -basis.rightZ * caliperLeft)
         );
       this.caliperGaugeLineObj.getTransform().setLocalRotation(facingQuat);
     }
@@ -1714,8 +1720,6 @@ export class TerraFormController extends BaseScriptComponent {
     }
 
     // 4. All 5 radial zone handles stay along user's right silhouette of the clay
-    const actualRadiiMm = this.getActualRadiiMm();
-    const actualHeightCm = this.getActualHeightCm();
     for (let i = 0; i < this.zoneHandles.length; i++) {
       const slot = this.zoneHandles[i];
       const radialDist = actualRadiiMm[i] / 10.0 + 0.9;

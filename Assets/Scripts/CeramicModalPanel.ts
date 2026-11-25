@@ -51,8 +51,8 @@ export class CeramicModalPanel extends BaseScriptComponent {
   @ui.separator
   @input
   @hint("Calibrated modal width in cm for SPECS additive FOV")
-  @widget(new SliderWidget(8.0, 12.0, 0.5))
-  public panelWidthCm: number = 8.6;
+  @widget(new SliderWidget(7.0, 12.0, 0.5))
+  public panelWidthCm: number = 8.0;
 
   private _onCycleSurface = new Event<void>();
   private _onCycleGlazeMethod = new Event<void>();

@@ -394,29 +394,48 @@ export class LatheMeshGenerator {
       }
     }
 
-    // Hollow rim lip + bright recessed inner wall + SOLID floor cap (all CCW facing visible side!)
-    const rimOuterRad = Math.max(
-      0.8,
-      this.interpolateRadiusCm(actualRadiiMm, 1.0) - wallInsetCm
-    );
-    const rimWallThicknessCm = technique === "KURINUKI" ? 1.4 : 0.65;
-    const innerDepthY = Math.max(1.0, actualHeightCm * 0.22);
+    // 2. TRUE CURVED INNER CAVITY WALL (mirrors outer Catmull-Rom profile inset by wallThicknessCm!)
+    //    Guaranteed strictly inside outer wall at EVERY height t so it never self-intersects!
+    const rimWallThicknessCm = technique === "KURINUKI" ? 1.35 : 0.65;
+    const floorStartT = 0.14;
+    const innerRings = Math.max(6, Math.round(effectiveHeightRings * 0.7));
 
+    const computeOuterRadiusAt = (tVal: number, theta: number): number => {
+      let rVal = Math.max(
+        0.9,
+        this.interpolateRadiusCm(actualRadiiMm, tVal) - wallInsetCm
+      );
+      if (technique === "COILING") {
+        const coilWave = Math.abs(Math.sin(tVal * Math.PI * 10.0));
+        rVal += (coilWave - 0.5) * (compressedOrPaddled ? 0.18 : 0.55);
+      } else if (technique === "PINCHING") {
+        rVal += 0.09 * Math.sin(theta * 5.0 + tVal * 9.0);
+      } else if (technique === "KURINUKI") {
+        rVal += 0.16 * Math.cos(theta * 3.0 - tVal * 4.0);
+      }
+      return Math.max(0.85, rVal);
+    };
+
+    const computeInnerRadiusAt = (tVal: number, theta: number): number => {
+      const outerR = computeOuterRadiusAt(tVal, theta);
+      // Taper gently toward the interior floor for an authentic curved potter's interior
+      const floorCurve =
+        tVal < floorStartT + 0.08
+          ? 0.88 + 0.12 * ((tVal - floorStartT) / 0.08)
+          : 1.0;
+      return Math.max(0.35, (outerR - rimWallThicknessCm) * floorCurve);
+    };
+
+    // 2a. Smooth Top Rim Lip connecting outer rim (t=1) to inner rim (t=1), facing +Y
     const lipStart = vertices.length / 10;
     for (let c = 0; c <= effectiveRadialSegs; c++) {
       const theta = (c / effectiveRadialSegs) * Math.PI * 2.0;
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
+      const outerRimR = computeOuterRadiusAt(1.0, theta);
+      const innerRimR = computeInnerRadiusAt(1.0, theta);
 
-      let outerRimR = rimOuterRad;
-      if (technique === "PINCHING") {
-        outerRimR += 0.09 * Math.sin(theta * 5.0 + 9.0);
-      } else if (technique === "KURINUKI") {
-        outerRimR += 0.16 * Math.cos(theta * 3.0 - 4.0);
-      }
-      const innerRimR = Math.max(0.4, outerRimR - rimWallThicknessCm);
-
-      // Outer rim top (bright lit lip)
+      // Outer rim edge
       vertices.push(
         cosT * outerRimR,
         actualHeightCm,
@@ -424,12 +443,12 @@ export class LatheMeshGenerator {
         0,
         1,
         0,
-        Math.min(1, baseColor.r * 1.15),
-        Math.min(1, baseColor.g * 1.15),
-        Math.min(1, baseColor.b * 1.15),
+        Math.min(1, baseColor.r * 1.14),
+        Math.min(1, baseColor.g * 1.14),
+        Math.min(1, baseColor.b * 1.14),
         1.0
       );
-      // Inner rim top
+      // Inner rim edge
       vertices.push(
         cosT * innerRimR,
         actualHeightCm,
@@ -437,54 +456,80 @@ export class LatheMeshGenerator {
         0,
         1,
         0,
-        Math.min(1, baseColor.r * 0.92),
-        Math.min(1, baseColor.g * 0.92),
-        Math.min(1, baseColor.b * 0.92),
-        1.0
-      );
-      // Inner cavity lower wall (kept >=0.68 brightness so it stays solid on SPECS additive LCOS)
-      vertices.push(
-        cosT * (innerRimR * 0.8),
-        innerDepthY,
-        sinT * (innerRimR * 0.8),
-        -cosT,
-        0.25,
-        -sinT,
-        Math.min(1, baseColor.r * 0.72),
-        Math.min(1, baseColor.g * 0.72),
-        Math.min(1, baseColor.b * 0.72),
+        Math.min(1, baseColor.r * 0.96),
+        Math.min(1, baseColor.g * 0.96),
+        Math.min(1, baseColor.b * 0.96),
         1.0
       );
     }
-
     for (let c = 0; c < effectiveRadialSegs; c++) {
-      const o0 = lipStart + c * 3;
+      const o0 = lipStart + c * 2;
       const i0 = o0 + 1;
-      const b0 = o0 + 2;
-      const o1 = lipStart + (c + 1) * 3;
+      const o1 = lipStart + (c + 1) * 2;
       const i1 = o1 + 1;
-      const b1 = o1 + 2;
-
-      // Top rim ring: (i0 - o0) x (o1 - o0) points +Y (UPWARD toward viewer!)
+      // (i0 - o0) x (o1 - o0) points +Y (upward)
       indices.push(o0, i0, o1);
       indices.push(i0, i1, o1);
-      // Inner cavity wall: (b0 - i0) x (i1 - i0) points INWARD toward center axis!
-      indices.push(i0, b0, i1);
-      indices.push(i1, b0, b1);
     }
 
-    // Solid inner cavity floor cap at innerDepthY (CCW facing +Y so pot NEVER looks hollow/transparent!)
+    // 2b. Multi-Ring Curved Inner Cavity Wall (t from floorStartT up to 1.0, normals facing INWARD)
+    const innerWallStart = vertices.length / 10;
+    for (let ir = 0; ir <= innerRings; ir++) {
+      const u = ir / innerRings;
+      const tVal = floorStartT + u * (1.0 - floorStartT);
+      const y = tVal * actualHeightCm;
+      // Smooth warm interior gradient (brighter near rim, soft warm shadow at bottom — stays solid on SPECS!)
+      const shade = 0.66 + 0.28 * u;
+
+      for (let c = 0; c <= effectiveRadialSegs; c++) {
+        const theta = (c / effectiveRadialSegs) * Math.PI * 2.0;
+        const cosT = Math.cos(theta);
+        const sinT = Math.sin(theta);
+        const innerR = computeInnerRadiusAt(tVal, theta);
+        const lightFactor =
+          0.78 + 0.22 * Math.max(0, -cosT * 0.5 - sinT * 0.4 + 0.5);
+        const f = shade * lightFactor;
+
+        vertices.push(
+          cosT * innerR,
+          y,
+          sinT * innerR,
+          -cosT,
+          0.2,
+          -sinT,
+          Math.min(1, baseColor.r * f),
+          Math.min(1, baseColor.g * f),
+          Math.min(1, baseColor.b * f),
+          1.0
+        );
+      }
+    }
+
+    for (let ir = 0; ir < innerRings; ir++) {
+      for (let c = 0; c < effectiveRadialSegs; c++) {
+        const bl = innerWallStart + ir * cols + c;
+        const tl = innerWallStart + (ir + 1) * cols + c;
+        const br = innerWallStart + ir * cols + (c + 1);
+        const tr = innerWallStart + (ir + 1) * cols + (c + 1);
+        // Reversed winding from outer wall so triangles face INWARD toward cavity center!
+        indices.push(tl, bl, tr);
+        indices.push(tr, bl, br);
+      }
+    }
+
+    // 2c. Solid Inner Floor Cap at y = floorStartT * actualHeightCm (facing +Y)
+    const floorY = floorStartT * actualHeightCm;
     const floorCenterIdx = vertices.length / 10;
     vertices.push(
       0,
-      innerDepthY,
+      floorY,
       0,
       0,
       1,
       0,
-      Math.min(1, baseColor.r * 0.68),
-      Math.min(1, baseColor.g * 0.68),
-      Math.min(1, baseColor.b * 0.68),
+      Math.min(1, baseColor.r * 0.62),
+      Math.min(1, baseColor.g * 0.62),
+      Math.min(1, baseColor.b * 0.62),
       1.0
     );
     const floorRingStart = vertices.length / 10;
@@ -492,27 +537,20 @@ export class LatheMeshGenerator {
       const theta = (c / effectiveRadialSegs) * Math.PI * 2.0;
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
-      let outerRimR = rimOuterRad;
-      if (technique === "PINCHING") {
-        outerRimR += 0.09 * Math.sin(theta * 5.0 + 9.0);
-      } else if (technique === "KURINUKI") {
-        outerRimR += 0.16 * Math.cos(theta * 3.0 - 4.0);
-      }
-      const floorR = Math.max(0.35, (outerRimR - rimWallThicknessCm) * 0.8);
+      const floorR = computeInnerRadiusAt(floorStartT, theta);
       vertices.push(
         cosT * floorR,
-        innerDepthY,
+        floorY,
         sinT * floorR,
         0,
         1,
         0,
-        Math.min(1, baseColor.r * 0.74),
-        Math.min(1, baseColor.g * 0.74),
-        Math.min(1, baseColor.b * 0.74),
+        Math.min(1, baseColor.r * 0.66),
+        Math.min(1, baseColor.g * 0.66),
+        Math.min(1, baseColor.b * 0.66),
         1.0
       );
     }
-    // Same +Y CCW winding as wheel bat top cap: (center, c+1, c)
     for (let c = 0; c < effectiveRadialSegs; c++) {
       indices.push(floorCenterIdx, floorRingStart + c + 1, floorRingStart + c);
     }

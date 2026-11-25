@@ -1551,7 +1551,7 @@
   Children:
     []
   Components:
-    - !<own> 8bff0f3c-3d67-4922-a714-eb2ab92027cf
+    []
 - !<SceneObject/795171b4-7706-4d83-a601-e8924134c610>
   PrefabRemaps:
     []
@@ -1723,22 +1723,6 @@
   ScriptInputs:
     "":
       drawDebug: false
-  ScriptTypes:
-    "":
-      {}
-- !<ScriptComponent/8bff0f3c-3d67-4922-a714-eb2ab92027cf>
-  PrefabRemaps:
-    []
-  Name: MessagingBridge
-  Enabled: true
-  ScriptAsset: !<reference> 9aa407db-2872-4afc-a162-cf7faf2a0f29
-  ScriptInputsDefault:
-    {}
-  ScriptTypesDefault:
-    {}
-  ScriptInputs:
-    "":
-      {}
   ScriptTypes:
     "":
       {}

@@ -60,7 +60,7 @@
     - '// @ui {"widget":"label", "label":"<span style=\"color: #4AF2FF;\">ClayViewStudioUI — Studio Card HUD</span>"}'
     - '// @ui {"widget":"separator"}'
     - '// @ui {"widget":"group_start", "label":"Settings"}'
-    - '// @input float cardWidthCm = 8.2 {"hint":"Calibrated card width in cm (stays well inside SPECS +/-20.5cm horizontal FOV)", "widget":"slider", "min":7, "max":11, "step":0.5}'
+    - '// @input float cardWidthCm = 7.6 {"hint":"Calibrated card width in cm (compact so it never overlaps clay or clips FOV)", "widget":"slider", "min":7, "max":11, "step":0.5}'
     - '// @input float paddingCm = 0.42 {"hint":"Inner horizontal/vertical padding in cm", "widget":"slider", "min":0.3, "max":1.2, "step":0.1}'
     - '// @input float rowGapCm = 0.24 {"hint":"Row spacing in cm", "widget":"slider", "min":0.2, "max":1, "step":0.05}'
     - '// @input vec4 ivoryColor = {1,0.99,0.96,1} {"hint":"Primary Ivory text color for additive LCOS display", "widget":"color"}'
