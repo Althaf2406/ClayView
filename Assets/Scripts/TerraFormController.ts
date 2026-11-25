@@ -172,10 +172,6 @@ export class TerraFormController extends BaseScriptComponent {
   private caliperMeshVisual: RenderMeshVisual | null = null;
   private clayMeshBuilder: MeshBuilder | null = null;
   private clayMeshVisual: RenderMeshVisual | null = null;
-  private clayStockPileObj: SceneObject | null = null;
-  private clayStockLabel: Text | null = null;
-  private clayStockMeshBuilder: MeshBuilder | null = null;
-  private clayStockMeshVisual: RenderMeshVisual | null = null;
 
   // Wheel rotation state
   private wheelSpinAngleRad: number = 0;
@@ -303,24 +299,6 @@ export class TerraFormController extends BaseScriptComponent {
       this.wheelCenterAnchor,
       "SpinningClayMesh",
       new vec3(0.0, 0.0, 0.0)
-    );
-
-    // 3b. ClayStockPile (3D stack of reserve wedged clay balls reflecting Qty & Clay mass!)
-    this.clayStockPileObj = this.getOrCreateChildObject(
-      this.wheelCenterAnchor,
-      "ClayStockPile",
-      new vec3(-14.8, 0.0, -5.8)
-    );
-    const stockLabelObj = this.getOrCreateChildObject(
-      this.clayStockPileObj,
-      "ClayStockLabel",
-      new vec3(0.0, 5.5, 0.0)
-    );
-    this.clayStockLabel = this.getOrCreateText(
-      stockLabelObj,
-      "Stock: 5x 900g",
-      15,
-      new vec4(1.0, 0.99, 0.96, 0.9)
     );
 
     // 4. GhostProfileMesh (1:1 holographic lathe wireframe: 16 ribs + 6 rings)
@@ -796,10 +774,6 @@ export class TerraFormController extends BaseScriptComponent {
         this.playUiClick();
         this.cycleClayMass();
       });
-      this.studioUI.onCycleSeriesCount.add(() => {
-        this.playUiClick();
-        this.cycleSeriesCount();
-      });
       this.studioUI.onCycleShrinkage.add(() => {
         this.playUiClick();
         this.cycleShrinkagePreset();
@@ -807,10 +781,6 @@ export class TerraFormController extends BaseScriptComponent {
       this.studioUI.onCyclePreset.add(() => {
         this.playUiClick();
         this.cycleVesselPreset();
-      });
-      this.studioUI.onSavePiece.add(() => {
-        this.playUiClick();
-        this.saveCurrentPieceAndAdvance();
       });
       this.studioUI.onToggleWireframe.add(() => {
         this.playUiClick();
@@ -1148,7 +1118,7 @@ export class TerraFormController extends BaseScriptComponent {
     this.selectedClayMass = ClayStudioFlowEngine.nextMassPreset(
       this.selectedClayMass
     );
-    // Always immediately drop & resize the 3D Globe Piece on the wheel AND reserve stock balls!
+    // Always immediately drop & resize the 3D Globe Piece on the wheel!
     this.clayState = ClayStudioFlowEngine.buildGlobePieceState(
       this.wetTarget.wetRadiiMm,
       this.selectedClayMass
@@ -1158,14 +1128,6 @@ export class TerraFormController extends BaseScriptComponent {
     this.potterToolPlaneX = -5.2;
     this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
     this.syncPotterHandToolTransform();
-    this.recomputeAndRefreshVisuals();
-  }
-
-  public cycleSeriesCount(): void {
-    const nextQty = ClayStudioFlowEngine.nextSeriesCount(
-      this.seriesTracker.getTargetSeriesCount()
-    );
-    this.seriesTracker.setTargetSeriesCount(nextQty);
     this.recomputeAndRefreshVisuals();
   }
 
@@ -1366,20 +1328,6 @@ export class TerraFormController extends BaseScriptComponent {
       labelObj.getTransform().setLocalRotation(facingQuat);
     }
 
-    // 3b. ClayStockPile (3D reserve clay balls) orbits cleanly to user's left-rear table area
-    if (this.clayStockPileObj) {
-      this.clayStockPileObj
-        .getTransform()
-        .setLocalPosition(
-          new vec3(
-            -basis.rightX * 12.6 - basis.toCamX * 10.5,
-            0.0,
-            -basis.rightZ * 12.6 - basis.toCamZ * 10.5
-          )
-        );
-      this.clayStockPileObj.getTransform().setLocalRotation(facingQuat);
-    }
-
     // 4. All 5 radial zone handles stay along user's right silhouette of the clay
     const actualRadiiMm = this.getActualRadiiMm();
     const actualHeightCm = this.getActualHeightCm();
@@ -1559,18 +1507,16 @@ export class TerraFormController extends BaseScriptComponent {
         this.flowStage === "DETECT_TABLE"
           ? "1. Aim at table · Tap Lock Table"
           : this.flowStage === "SELECT_CLAY"
-          ? "2. Pick clay mass & qty · Start"
+          ? "2. Pick clay weight · Start"
           : "3. Pull Globe up · Hand In/Out";
       this.studioUI.updateMetrics(
         KilnShrinkageEngine.getDisplayLabel(this.currentClayType),
-        this.seriesTracker.getCounterLabel(),
         bellyStatus,
         combinedMatch,
         this.currentVesselSpec.presetName,
         ClayStudioFlowEngine.getStageTitle(this.flowStage),
         ClayStudioFlowEngine.getStageActionLabel(this.flowStage),
         `Clay: ${massShort}`,
-        `Qty: ${this.seriesTracker.getTargetSeriesCount()} pcs`,
         stageHint
       );
     }
@@ -1578,7 +1524,6 @@ export class TerraFormController extends BaseScriptComponent {
     this.rebuildGhostWireframeMesh(bellyStatus, zoneStatuses);
     this.rebuildCaliperGaugeMesh(actualHeightCm, heightStatus);
     this.rebuildSpinningClayMesh(actualHeightCm);
-    this.rebuildClayStockPileMesh();
   }
 
   private statusToVec4(status: ToleranceStatus): vec4 {
@@ -1754,93 +1699,6 @@ export class TerraFormController extends BaseScriptComponent {
         this.clayMeshVisual.mainMaterial = this.wireframeMaterial;
       }
       this.clayMeshBuilder.updateMesh();
-    }
-  }
-
-  private rebuildClayStockPileMesh(): void {
-    if (!this.clayStockPileObj) return;
-
-    const massPreset = ClayStudioFlowEngine.getMassPreset(
-      this.selectedClayMass
-    );
-    const remainingBalls = Math.max(
-      0,
-      this.seriesTracker.getTargetSeriesCount() -
-        this.seriesTracker.getCurrentPieceNumber()
-    );
-    const massShort =
-      massPreset.grams >= 1000
-        ? `${(massPreset.grams / 1000).toFixed(1)}kg`
-        : `${massPreset.grams}g`;
-
-    if (this.clayStockLabel) {
-      this.clayStockLabel.text =
-        remainingBalls > 0
-          ? `Stock: ${remainingBalls}x ${massShort}`
-          : `Final ${massShort} Piece`;
-      const labelY =
-        remainingBalls > 6
-          ? massPreset.stockBallRadiusCm * 3.4 + 2.0
-          : remainingBalls > 0
-          ? massPreset.stockBallRadiusCm * 2.0 + 1.8
-          : 2.0;
-      this.clayStockLabel
-        .getSceneObject()
-        .getTransform()
-        .setLocalPosition(new vec3(0.0, labelY, 0.0));
-    }
-
-    const clayColor =
-      this.currentClayType === "PORCELAIN_14"
-        ? OPTICAL_PALETTE.CLAY_PORCELAIN
-        : OPTICAL_PALETTE.CLAY_STONEWARE;
-
-    const geom = LatheMeshGenerator.buildClayStockPile(
-      remainingBalls,
-      massPreset.stockBallRadiusCm,
-      clayColor
-    );
-
-    if (!this.clayStockMeshVisual) {
-      this.clayStockMeshVisual =
-        (this.clayStockPileObj.getComponent(
-          "Component.RenderMeshVisual"
-        ) as RenderMeshVisual) ||
-        (this.clayStockPileObj.createComponent(
-          "Component.RenderMeshVisual"
-        ) as RenderMeshVisual);
-    }
-
-    if (geom.vertexCount === 0) {
-      this.clayStockMeshVisual.enabled = false;
-      return;
-    }
-    this.clayStockMeshVisual.enabled = true;
-
-    if (!this.clayStockMeshBuilder) {
-      this.clayStockMeshBuilder = new MeshBuilder([
-        { name: "position", components: 3 },
-        { name: "normal", components: 3, normalized: true },
-        { name: "color", components: 4 },
-      ]);
-      this.clayStockMeshBuilder.topology = MeshTopology.Triangles;
-      this.clayStockMeshBuilder.indexType = MeshIndexType.UInt16;
-    } else {
-      const vCount = this.clayStockMeshBuilder.getVerticesCount();
-      if (vCount > 0) this.clayStockMeshBuilder.eraseVertices(0, vCount);
-      const iCount = this.clayStockMeshBuilder.getIndicesCount();
-      if (iCount > 0) this.clayStockMeshBuilder.eraseIndices(0, iCount);
-    }
-
-    this.clayStockMeshBuilder.appendVerticesInterleaved(geom.vertices);
-    this.clayStockMeshBuilder.appendIndices(geom.indices);
-
-    if (this.clayStockMeshBuilder.isValid()) {
-      this.clayStockMeshVisual.mesh = this.clayStockMeshBuilder.getMesh();
-      if (this.wireframeMaterial) {
-        this.clayStockMeshVisual.mainMaterial = this.wireframeMaterial;
-      }
-      this.clayStockMeshBuilder.updateMesh();
     }
   }
 

@@ -5,9 +5,9 @@ import { findSceneObjectByName, sleep } from "Leaf.lspkg/Utils/common/Utils";
 import { expect } from "Leaf.lspkg/Utils/common/Expect";
 
 /**
- * DC-4: Series Consistency & History Logging (SavePieceBtn / "next piece")
- * Verifies triggering SavePieceBtn advances PieceCounterText from "Piece 1 of 6"
- * to "Piece 2 of 6".
+ * DC-4: Guided 3-Step Pottery Flow & Clay Mass Selection
+ * Verifies StageActionBtn advances Detect Table -> Select Clay -> Throw Clay
+ * and ClayMassBtn resizes the Globe Piece from 900g to 1.5kg.
  */
 @component
 export class SeriesManagementScenario extends Scenario {
@@ -15,17 +15,32 @@ export class SeriesManagementScenario extends Scenario {
     await sleep(300);
 
     const interactor = new DefaultLeafInteractor();
-    const saveBtn = findInteractableByName("SavePieceBtn");
-    const pieceCounterText = findSceneObjectByName(
-      "PieceCounterText"
+    const stageBtn = findInteractableByName("StageActionBtn");
+    const massBtn = findInteractableByName("ClayMassBtn");
+    const stageBadgeText = findSceneObjectByName(
+      "StageBadgeText"
+    ).getComponent("Component.Text") as Text;
+    const actualHeightText = findSceneObjectByName(
+      "ActualHeightText"
     ).getComponent("Component.Text") as Text;
 
-    expect(saveBtn).toBeTruthy();
-    expect(pieceCounterText.text).toBe("Piece 1 of 6");
+    expect(stageBtn).toBeTruthy();
+    expect(massBtn).toBeTruthy();
+    expect(stageBadgeText.text).toBe("STEP 1/3 · DETECT TABLE");
 
-    await interactor.trigger(saveBtn);
+    // Step 1 -> Step 2 (Lock Table)
+    await interactor.trigger(stageBtn);
     await sleep(150);
+    expect(stageBadgeText.text).toBe("STEP 2/3 · SELECT CLAY");
 
-    expect(pieceCounterText.text).toBe("Piece 2 of 6");
+    // Cycle Clay Mass 900g (10.40 cm) -> 1.5kg (14.50 cm)
+    await interactor.trigger(massBtn);
+    await sleep(150);
+    expect(actualHeightText.text.includes("14.50")).toBe(true);
+
+    // Step 2 -> Step 3 (Start Throwing)
+    await interactor.trigger(stageBtn);
+    await sleep(150);
+    expect(stageBadgeText.text).toBe("STEP 3/3 · THROW CLAY");
   }
 }

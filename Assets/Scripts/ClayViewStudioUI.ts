@@ -107,19 +107,14 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   @ui.group_end
 
   private _onCycleShrinkage = new Event<void>();
-  private _onSavePiece = new Event<void>();
   private _onToggleWireframe = new Event<void>();
   private _onCyclePreset = new Event<void>();
   private _onResetClay = new Event<void>();
   private _onStageAction = new Event<void>();
   private _onCycleClayMass = new Event<void>();
-  private _onCycleSeriesCount = new Event<void>();
 
   public get onCycleShrinkage(): PublicApi<void> {
     return this._onCycleShrinkage.publicApi();
-  }
-  public get onSavePiece(): PublicApi<void> {
-    return this._onSavePiece.publicApi();
   }
   public get onToggleWireframe(): PublicApi<void> {
     return this._onToggleWireframe.publicApi();
@@ -136,16 +131,11 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   public get onCycleClayMass(): PublicApi<void> {
     return this._onCycleClayMass.publicApi();
   }
-  public get onCycleSeriesCount(): PublicApi<void> {
-    return this._onCycleSeriesCount.publicApi();
-  }
 
   private stageBadgeText: Text | null = null;
   private stageActionLabelText: Text | null = null;
   private clayMassBtnLabelText: Text | null = null;
-  private seriesCountBtnLabelText: Text | null = null;
   private shrinkageBadgeText: Text | null = null;
-  private pieceCounterText: Text | null = null;
   private bellyZoneStatusText: Text | null = null;
   private matchPercentText: Text | null = null;
   private presetBtnLabelText: Text | null = null;
@@ -248,18 +238,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     );
     this.shrinkageBadgeText = badge.text;
 
-    // 4. PieceCounterText ("Piece 1 of 6" -> "Piece 2 of 6")
-    const counter = this.addColumnText(
-      content,
-      "PieceCounterText",
-      "Piece 1 of 6",
-      "Body",
-      0.88,
-      this.ivoryColor
-    );
-    this.pieceCounterText = counter.text;
-
-    // 5. Status Row: Status Icon + BellyZoneStatusText ("MATCH_TEAL" / "OVER_CORAL")
+    // 4. Status Row: Status Icon + BellyZoneStatusText ("MATCH_TEAL" / "OVER_CORAL")
     const statusRow = global.scene.createSceneObject("StatusRow");
     statusRow.setParent(content);
     const statusFlex = statusRow.createComponent(
@@ -295,7 +274,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     );
     this.bellyZoneStatusText = bellyStatus.text;
 
-    // 6. MatchPercentText ("100%")
+    // 5. MatchPercentText ("100%")
     const match = this.addColumnText(
       content,
       "MatchPercentText",
@@ -306,9 +285,9 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     );
     this.matchPercentText = match.text;
 
-    // 7. Guided Flow & Studio Controls (UIKit Buttons = SIK Interactable for mouse & LEAF)
+    // 6. Guided Flow & Studio Controls (Clean 5-button layout)
     const btnW = Math.min(7.4, innerW);
-    const btnH = 1.2;
+    const btnH = 1.3;
 
     const stageBtn = this.addActionButton(
       content,
@@ -329,16 +308,6 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       () => this._onCycleClayMass.invoke()
     );
     this.clayMassBtnLabelText = massBtn.labelText;
-
-    const seriesBtn = this.addActionButton(
-      content,
-      "SeriesCountBtn",
-      "Qty: 6 pcs",
-      btnW,
-      btnH,
-      () => this._onCycleSeriesCount.invoke()
-    );
-    this.seriesCountBtnLabelText = seriesBtn.labelText;
 
     this.addActionButton(
       content,
@@ -361,15 +330,6 @@ export class ClayViewStudioUI extends BaseScriptComponent {
 
     this.addActionButton(
       content,
-      "SavePieceBtn",
-      "Next Piece",
-      btnW,
-      btnH,
-      () => this._onSavePiece.invoke()
-    );
-
-    this.addActionButton(
-      content,
       "ToggleWireframeBtn",
       "Toggle Mesh",
       btnW,
@@ -377,7 +337,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       () => this._onToggleWireframe.invoke()
     );
 
-    // 8. Dynamic Guided Flow Caption
+    // 7. Dynamic Guided Flow Caption
     const caption = this.addColumnText(
       content,
       "PreviewStandInCaption",
@@ -391,14 +351,12 @@ export class ClayViewStudioUI extends BaseScriptComponent {
 
   public updateMetrics(
     shrinkageLabel: string,
-    pieceCounterLabel: string,
     bellyStatus: ToleranceStatus,
     matchPercentage: number,
     vesselPresetName?: string,
     stageTitle?: string,
     stageActionLabel?: string,
     clayMassLabel?: string,
-    seriesQtyLabel?: string,
     stageHintCaption?: string
   ): void {
     if (stageTitle && this.stageBadgeText) {
@@ -417,17 +375,11 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     if (clayMassLabel && this.clayMassBtnLabelText) {
       this.clayMassBtnLabelText.text = clayMassLabel;
     }
-    if (seriesQtyLabel && this.seriesCountBtnLabelText) {
-      this.seriesCountBtnLabelText.text = seriesQtyLabel;
-    }
     if (stageHintCaption && this.hintCaptionText) {
       this.hintCaptionText.text = stageHintCaption;
     }
     if (this.shrinkageBadgeText) {
       this.shrinkageBadgeText.text = shrinkageLabel;
-    }
-    if (this.pieceCounterText) {
-      this.pieceCounterText.text = pieceCounterLabel;
     }
     if (this.bellyZoneStatusText) {
       this.bellyZoneStatusText.text = bellyStatus;
