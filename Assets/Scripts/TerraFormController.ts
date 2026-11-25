@@ -51,6 +51,11 @@ import {
   nextInOrder,
 } from "./Core/CeramicMaterialCatalog";
 import { CeramicCompatibilityEngine } from "./Core/CeramicCompatibilityEngine";
+import {
+  FREEFORM_PRESET_ORDER,
+  FreeformClayField,
+  FreeformSculptPreset,
+} from "./Core/FreeformClayField";
 import { CeramicModalPanel } from "./CeramicModalPanel";
 import { ClayViewStudioUI } from "./ClayViewStudioUI";
 import { Interactable } from "SpectaclesInteractionKit.lspkg/Components/Interaction/Interactable/Interactable";
@@ -158,6 +163,10 @@ export class TerraFormController extends BaseScriptComponent {
   };
 
   private lastEvaluation: SimulationResult | null = null;
+
+  // 2D Polar Freeform 3D Sculpting Field (asymmetric wiggle rims, spouts, dips, lotus waves, local pinches!)
+  private freeformField: FreeformClayField = new FreeformClayField();
+  private nextFreeformPreset: FreeformSculptPreset = "WIGGLE_RIM";
 
   // 360-degree camera-following orbital basis around WheelCenterAnchor
   private currentOrbitalBasis: OrbitalBasis = {
@@ -869,6 +878,10 @@ export class TerraFormController extends BaseScriptComponent {
         this.playUiClick();
         this.cycleMoistureState();
       });
+      this.studioUI.onApplyFreeformSculpt.add(() => {
+        this.playUiClick();
+        this.applyNextFreeformSculptPreset();
+      });
       this.studioUI.onOpenDecoration.add(() => {
         this.playUiClick();
         this.openDecorationModal();
@@ -996,7 +1009,9 @@ export class TerraFormController extends BaseScriptComponent {
       );
     }
 
-    // 4. Free 3D PotterHandTool — dip INSIDE from top to push outward, or squeeze from OUTSIDE!
+    // 4. Free 3D PotterHandTool — TRUE LOCAL 3D ASYMMETRIC SCULPTING!
+    //    Push outward from inside to form a spout/bulge, pinch outside to dent one side,
+    //    or pull UP/DOWN near the rim to sculpt wavy/wiggle/asymmetric heights!
     if (this.potterHandToolInteractable) {
       this.potterHandToolInteractable.onDragUpdate.add(
         (event: DragInteractorEvent) => {
@@ -1005,16 +1020,15 @@ export class TerraFormController extends BaseScriptComponent {
 
           this.ensureThrowingStage();
 
-          const moveScale = 0.65;
-          const dragRight =
-            dragVec.x * this.currentOrbitalBasis.rightX +
-            dragVec.z * this.currentOrbitalBasis.rightZ;
+          const moveScale = 0.7;
+          const b = this.currentOrbitalBasis;
+          const dragRight = dragVec.x * b.rightX + dragVec.z * b.rightZ;
           const dx = dragRight * moveScale;
           const dy = dragVec.y * moveScale;
 
           const nextX = Math.max(
-            -13.5,
-            Math.min(13.5, this.potterToolPlaneX + dx)
+            -14.5,
+            Math.min(14.5, this.potterToolPlaneX + dx)
           );
           const nextY = Math.max(
             0.6,
@@ -1024,24 +1038,58 @@ export class TerraFormController extends BaseScriptComponent {
           this.potterToolPlaneY = nextY;
           this.syncPotterHandToolTransform();
 
-          const contact = ClayWheelPhysicsEngine.applyHandToolContact(
-            this.wetTarget.wetRadiiMm,
-            this.clayState,
-            { x: nextX, y: nextY, z: 0.0 },
-            { x: dx, y: dy, z: 0.0 },
-            1.4,
-            this.getCurrentMaxHeightCm()
-          );
+          // Compute exact 3D local position in WheelCenterAnchor space so walking around the pot sculpts ANY angle!
+          const lx = b.rightX * nextX;
+          const lz = b.rightZ * nextX;
+          const rToolCm = Math.sqrt(lx * lx + lz * lz);
+          const actualH = Math.max(2.0, this.getActualHeightCm());
+          const tContact = Math.max(0, Math.min(1, nextY / actualH));
 
-          this.updatePotterHandToolVisual(contact.mode);
+          if (rToolCm > 0.35 && nextY <= actualH + 5.5) {
+            const toolTheta = Math.atan2(lz, lx);
+            const baseWallCm = LatheMeshGenerator.interpolateRadiusCm(
+              this.getActualRadiiMm(),
+              tContact
+            );
+            const wallRCm =
+              baseWallCm +
+              this.freeformField.sampleRadialOffsetCm(tContact, toolTheta);
 
-          if (contact.deformed) {
-            this.ensureThrowingStage();
-            this.clayState = contact.state;
-            this.updateContactRing(contact.contactHeightCm, contact.mode);
-            this.recomputeAndRefreshVisuals();
-          } else if (contact.mode !== "NONE") {
-            this.updateContactRing(contact.contactHeightCm, contact.mode);
+            // Outward radial velocity along tool's local radial vector
+            const velX = b.rightX * dx;
+            const velZ = b.rightZ * dx;
+            const radialVelCm = (lx * velX + lz * velZ) / rToolCm;
+            const distToWall = Math.abs(rToolCm - wallRCm);
+
+            if (distToWall <= 3.6) {
+              const mode: HandContactMode =
+                rToolCm < wallRCm
+                  ? "INSIDE_PUSH"
+                  : tContact > 0.78 && Math.abs(dy) > Math.abs(dx)
+                  ? "TOP_OPEN"
+                  : "OUTSIDE_SQUEEZE";
+
+              // Apply localized Gaussian brush (radial push/pinch + rim height lift/dip!)
+              const radialDeltaMm = radialVelCm * 14.0;
+              const rimHeightDeltaCm = tContact >= 0.45 ? dy * 0.95 : 0;
+
+              this.freeformField.applyLocalBrush(
+                toolTheta,
+                tContact,
+                radialDeltaMm,
+                rimHeightDeltaCm,
+                0.55,
+                0.28
+              );
+
+              this.updatePotterHandToolVisual(mode);
+              this.updateContactRing(Math.min(actualH, nextY), mode);
+              this.recomputeAndRefreshVisuals();
+            } else {
+              this.updatePotterHandToolVisual("NONE");
+            }
+          } else {
+            this.updatePotterHandToolVisual("NONE");
           }
         }
       );
@@ -1106,19 +1154,38 @@ export class TerraFormController extends BaseScriptComponent {
 
         if (prevLocal) {
           const vel = localPos.sub(prevLocal);
-          const contact = ClayWheelPhysicsEngine.applyHandToolContact(
-            this.wetTarget.wetRadiiMm,
-            this.clayState,
-            { x: localPos.x, y: localPos.y, z: localPos.z },
-            { x: vel.x, y: vel.y, z: vel.z },
-            1.6,
-            this.getCurrentMaxHeightCm()
+          const rHandCm = Math.sqrt(
+            localPos.x * localPos.x + localPos.z * localPos.z
           );
-          if (contact.deformed) {
-            this.ensureThrowingStage();
-            this.clayState = contact.state;
-            this.updateContactRing(contact.contactHeightCm, contact.mode);
-            this.recomputeAndRefreshVisuals();
+          const actualH = Math.max(2.0, this.getActualHeightCm());
+          const tContact = Math.max(0, Math.min(1, localPos.y / actualH));
+
+          if (rHandCm > 0.35 && localPos.y >= 0 && localPos.y <= actualH + 4.5) {
+            const handTheta = Math.atan2(localPos.z, localPos.x);
+            const wallRCm =
+              LatheMeshGenerator.interpolateRadiusCm(
+                this.getActualRadiiMm(),
+                tContact
+              ) + this.freeformField.sampleRadialOffsetCm(tContact, handTheta);
+            const distToWall = Math.abs(rHandCm - wallRCm);
+            const radialVelCm =
+              (localPos.x * vel.x + localPos.z * vel.z) / rHandCm;
+
+            if (distToWall <= 2.6 && (Math.abs(radialVelCm) > 0.03 || Math.abs(vel.y) > 0.03)) {
+              this.ensureThrowingStage();
+              this.freeformField.applyLocalBrush(
+                handTheta,
+                tContact,
+                radialVelCm * 14.0,
+                tContact >= 0.45 ? vel.y * 0.95 : 0,
+                0.5,
+                0.26
+              );
+              const mode: HandContactMode =
+                rHandCm < wallRCm ? "INSIDE_PUSH" : "OUTSIDE_SQUEEZE";
+              this.updateContactRing(Math.min(actualH, localPos.y), mode);
+              this.recomputeAndRefreshVisuals();
+            }
           }
         }
         return localPos;
@@ -1280,6 +1347,18 @@ export class TerraFormController extends BaseScriptComponent {
       ...this.handBuildingParams,
       moistureState: nextMoisture,
     };
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public applyNextFreeformSculptPreset(): void {
+    this.ensureThrowingStage();
+    const b = this.currentOrbitalBasis;
+    const facingTheta = Math.atan2(b.toCamZ, b.toCamX);
+    this.freeformField.applyPreset(this.nextFreeformPreset, facingTheta);
+    this.nextFreeformPreset = nextInOrder(
+      FREEFORM_PRESET_ORDER,
+      this.nextFreeformPreset
+    );
     this.recomputeAndRefreshVisuals();
   }
 
@@ -1483,7 +1562,8 @@ export class TerraFormController extends BaseScriptComponent {
     this.selectedClayMass = ClayStudioFlowEngine.nextMassPreset(
       this.selectedClayMass
     );
-    // Always immediately drop & resize the 3D Globe Piece on the wheel!
+    // Always immediately drop & resize the 3D Globe Piece on the board!
+    this.freeformField.reset();
     this.clayState = ClayStudioFlowEngine.buildGlobePieceState(
       this.wetTarget.wetRadiiMm,
       this.selectedClayMass
@@ -1539,7 +1619,9 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   public resetClayDeformation(): void {
-    // Drop a fresh raw rounded Globe Piece clay mound on the spinning wheel!
+    // Drop a fresh raw rounded Globe Piece clay mound on the banding board!
+    this.freeformField.reset();
+    this.nextFreeformPreset = "WIGGLE_RIM";
     this.clayState = ClayStudioFlowEngine.buildGlobePieceState(
       this.wetTarget.wetRadiiMm,
       this.selectedClayMass
@@ -1950,7 +2032,8 @@ export class TerraFormController extends BaseScriptComponent {
         stageHint,
         `Tech: ${techSpec.name}`,
         `State: ${this.handBuildingParams.moistureState}`,
-        `${techSpec.name} · ${this.handBuildingParams.moistureState}`
+        `${techSpec.name} · ${this.handBuildingParams.moistureState}`,
+        FreeformClayField.getPresetLabel(this.nextFreeformPreset)
       );
     }
 
@@ -2143,7 +2226,8 @@ export class TerraFormController extends BaseScriptComponent {
       20,
       this.handBuildingParams.technique,
       this.surfaceSelection.surfaceTreatment,
-      this.handBuildingParams.compressedOrPaddled
+      this.handBuildingParams.compressedOrPaddled,
+      this.freeformField
     );
 
     if (!this.clayMeshBuilder) {

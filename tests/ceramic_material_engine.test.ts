@@ -11,6 +11,7 @@ import {
   SimulationInput,
 } from "../Assets/Scripts/Core/CeramicMaterialTypes";
 import { LatheMeshGenerator } from "../Assets/Scripts/Core/LatheMeshGenerator";
+import { FreeformClayField } from "../Assets/Scripts/Core/FreeformClayField";
 
 function createBaselineInput(
   overrides?: Partial<{
@@ -460,6 +461,72 @@ describe("Ceramic Material Science & Compatibility Engine", () => {
         noVent.issues.some((i) => i.code === "PAPER_CLAY_NO_VENTILATION"),
         true
       );
+    });
+  });
+
+  describe("FreeformClayField (3D Asymmetric Sculpting: Wiggle, Spout, Asym Dip, Lotus Wave)", () => {
+    test("local 3D brush deforms only the touched angle & rim height asymmetrically", () => {
+      const field = new FreeformClayField();
+      assert.equal(field.hasDeformation(), false);
+
+      // Pull a pouring spout outward + lift rim at angle 0 (front), leave opposite side (PI) untouched
+      field.applyLocalBrush(0, 0.9, 18.0, 2.5, 0.45, 0.25);
+      assert.equal(field.hasDeformation(), true);
+
+      const frontOffsetCm = field.sampleRadialOffsetCm(0.9, 0);
+      const backOffsetCm = field.sampleRadialOffsetCm(0.9, Math.PI);
+      const frontRimLiftCm = field.sampleRimHeightOffsetCm(0);
+      const backRimLiftCm = field.sampleRimHeightOffsetCm(Math.PI);
+
+      assert.equal(frontOffsetCm > 1.2, true);
+      assert.equal(Math.abs(backOffsetCm) < 0.05, true);
+      assert.equal(frontRimLiftCm > 1.5, true);
+      assert.equal(Math.abs(backRimLiftCm) < 0.05, true);
+    });
+
+    test("organic presets (Wiggle Rim, Spout, Asym Dip, Lotus Wave, Smooth) build solid asymmetric 3D meshes", () => {
+      const field = new FreeformClayField();
+      field.applyWiggleRim();
+      const maxH = Math.max(
+        field.computeLocalY(12, 1, 0),
+        field.computeLocalY(12, 1, Math.PI / 6),
+        field.computeLocalY(12, 1, Math.PI / 3)
+      );
+      const minH = Math.min(
+        field.computeLocalY(12, 1, 0),
+        field.computeLocalY(12, 1, Math.PI / 6),
+        field.computeLocalY(12, 1, Math.PI / 3)
+      );
+      assert.equal(maxH > minH, true);
+
+      field.reset();
+      field.applyAsymmetricDip(0);
+      // Dip at angle 0 is lower than opposite crest at PI
+      assert.equal(
+        field.computeLocalY(12, 1, 0) < field.computeLocalY(12, 1, Math.PI),
+        true
+      );
+
+      field.reset();
+      field.applyLotusWave(5);
+      const mesh = LatheMeshGenerator.buildSolidVessel(
+        12,
+        [45, 70, 85, 77, 85],
+        undefined,
+        32,
+        20,
+        "PINCHING",
+        "NONE",
+        true,
+        field
+      );
+      assert.equal(mesh.triangleCount > 1000, true);
+      assert.equal(mesh.vertices.length, mesh.vertexCount * 10);
+
+      const beforePeak = Math.abs(field.sampleRimHeightOffsetCm(Math.PI / 10));
+      field.smooth(0.6);
+      const afterPeak = Math.abs(field.sampleRimHeightOffsetCm(Math.PI / 10));
+      assert.equal(afterPeak < beforePeak, true);
     });
   });
 });

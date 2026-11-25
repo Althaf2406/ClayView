@@ -114,6 +114,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   private _onCycleClayMass = new Event<void>();
   private _onCycleHandBuildTech = new Event<void>();
   private _onCycleMoistureState = new Event<void>();
+  private _onApplyFreeformSculpt = new Event<void>();
   private _onOpenDecoration = new Event<void>();
   private _onOpenFiring = new Event<void>();
 
@@ -141,6 +142,9 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   public get onCycleMoistureState(): PublicApi<void> {
     return this._onCycleMoistureState.publicApi();
   }
+  public get onApplyFreeformSculpt(): PublicApi<void> {
+    return this._onApplyFreeformSculpt.publicApi();
+  }
   public get onOpenDecoration(): PublicApi<void> {
     return this._onOpenDecoration.publicApi();
   }
@@ -153,6 +157,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   private clayBodyBtnLabelText: Text | null = null;
   private handBuildTechBtnLabelText: Text | null = null;
   private moistureBtnLabelText: Text | null = null;
+  private sculptStyleBtnLabelText: Text | null = null;
   private clayMassBtnLabelText: Text | null = null;
   private shrinkageBadgeText: Text | null = null;
   private handBuildInfoText: Text | null = null;
@@ -316,8 +321,8 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     this.matchPercentText = match.text;
 
     // 6. 5-Stage Hand-Building Studio Controls (SIK Interactables)
-    const btnW = Math.min(7.4, innerW);
-    const btnH = 1.15;
+    const btnW = Math.min(6.7, innerW);
+    const btnH = 1.05;
 
     const stageBtn = this.addActionButton(
       content,
@@ -348,6 +353,16 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       () => this._onCycleHandBuildTech.invoke()
     );
     this.handBuildTechBtnLabelText = techBtn.labelText;
+
+    const sculptBtn = this.addActionButton(
+      content,
+      "SculptStyleBtn",
+      "Sculpt: +Wiggle Rim",
+      btnW,
+      btnH,
+      () => this._onApplyFreeformSculpt.invoke()
+    );
+    this.sculptStyleBtnLabelText = sculptBtn.labelText;
 
     const moistureBtn = this.addActionButton(
       content,
@@ -391,7 +406,7 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     const caption = this.addColumnText(
       content,
       "PreviewStandInCaption",
-      "1.Clay -> 2.Hand-Build -> 3.Dekor -> 4.Bakar",
+      "Drag Hand Tool anywhere for 3D sculpt!",
       "Caption",
       0.7,
       new vec4(1.0, 0.99, 0.96, 0.72)
@@ -410,7 +425,8 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     stageHintCaption?: string,
     handBuildTechLabel?: string,
     moistureStateLabel?: string,
-    handBuildSummaryLine?: string
+    handBuildSummaryLine?: string,
+    sculptStyleLabel?: string
   ): void {
     if (stageTitle && this.stageBadgeText) {
       this.stageBadgeText.text = stageTitle;
@@ -431,6 +447,9 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     }
     if (handBuildTechLabel && this.handBuildTechBtnLabelText) {
       this.handBuildTechBtnLabelText.text = handBuildTechLabel;
+    }
+    if (sculptStyleLabel && this.sculptStyleBtnLabelText) {
+      this.sculptStyleBtnLabelText.text = sculptStyleLabel;
     }
     if (moistureStateLabel && this.moistureBtnLabelText) {
       this.moistureBtnLabelText.text = moistureStateLabel;

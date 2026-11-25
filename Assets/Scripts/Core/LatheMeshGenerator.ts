@@ -3,6 +3,7 @@ import {
   HandBuildingTechniqueId,
   SurfaceTreatmentId,
 } from "./CeramicMaterialTypes";
+import { FreeformClayField } from "./FreeformClayField";
 
 export interface LatheWireframeGeometry {
   /** Interleaved [x, y, z, r, g, b, a] per vertex (stride = 7 floats) */
@@ -238,8 +239,8 @@ export class LatheMeshGenerator {
   /**
    * Builds a CCW-wound solid hollow-rim clay vessel (MeshTopology.Triangles)
    * adapted visually to the active Hand-Building technique (Pinching, Coiling,
-   * Slab Building, or Kurinuki) and Surface Treatment (Sgraffito, Mishima,
-   * Slip Trailing, Nerikomi, Burnishing, Faceting).
+   * Slab Building, or Kurinuki), Surface Treatment, and optional 3D asymmetric
+   * FreeformClayField (wiggle rims, spouts, asymmetric dips, lotus waves, local pinches!).
    */
   public static buildSolidVessel(
     actualHeightCm: number,
@@ -249,53 +250,71 @@ export class LatheMeshGenerator {
     heightRings: number = 20,
     technique: HandBuildingTechniqueId = "PINCHING",
     surfaceTreatment: SurfaceTreatmentId = "NONE",
-    compressedOrPaddled: boolean = true
+    compressedOrPaddled: boolean = true,
+    freeformField?: FreeformClayField
   ): SolidMeshGeometry {
     const vertices: number[] = [];
     const indices: number[] = [];
 
+    const hasFreeform = !!freeformField && freeformField.hasDeformation();
+
     // Technique-specific geometry resolution:
-    // - SLAB_BUILDING & KURINUKI / FACETING use crisp architectural polygonal walls!
-    const effectiveRadialSegs =
-      surfaceTreatment === "FACETING"
-        ? 10
-        : technique === "SLAB_BUILDING"
-        ? 8
-        : technique === "KURINUKI"
-        ? 7
-        : radialSegments;
+    // Use higher resolution when freeform sculpting is active so wavy rims/spouts look ultra smooth!
+    const effectiveRadialSegs = hasFreeform
+      ? Math.max(36, radialSegments)
+      : surfaceTreatment === "FACETING"
+      ? 10
+      : technique === "SLAB_BUILDING"
+      ? 8
+      : technique === "KURINUKI"
+      ? 7
+      : radialSegments;
     const effectiveHeightRings =
       technique === "COILING" ? 28 : heightRings;
 
     const wallInsetCm = 0.12;
     const cols = effectiveRadialSegs + 1;
 
+    const computeOuterRadiusAt = (tVal: number, theta: number): number => {
+      let rVal = Math.max(
+        0.9,
+        this.interpolateRadiusCm(actualRadiiMm, tVal) - wallInsetCm
+      );
+      if (technique === "COILING") {
+        const coilWave = Math.abs(Math.sin(tVal * Math.PI * 10.0));
+        rVal += (coilWave - 0.5) * (compressedOrPaddled ? 0.18 : 0.55);
+      } else if (technique === "PINCHING") {
+        rVal += 0.09 * Math.sin(theta * 5.0 + tVal * 9.0);
+      } else if (technique === "KURINUKI") {
+        rVal += 0.16 * Math.cos(theta * 3.0 - tVal * 4.0);
+      }
+      if (hasFreeform && freeformField) {
+        rVal += freeformField.sampleRadialOffsetCm(tVal, theta);
+      }
+      return Math.max(0.85, rVal);
+    };
+
+    const computeYAt = (tVal: number, theta: number): number => {
+      if (hasFreeform && freeformField) {
+        return freeformField.computeLocalY(actualHeightCm, tVal, theta);
+      }
+      return tVal * actualHeightCm;
+    };
+
     // Outer wall rings
     for (let r = 0; r <= effectiveHeightRings; r++) {
       const t = r / effectiveHeightRings;
-      const y = t * actualHeightCm;
-      let rad = Math.max(
-        0.8,
-        this.interpolateRadiusCm(actualRadiiMm, t) - wallInsetCm
-      );
 
-      // Hand-building silhouette character
+      // Hand-building surface shading character
       let groove = 1.0;
       if (technique === "COILING") {
-        // Pronounced stacked horizontal coil rings (smoothed when paddled/compressed)
         const coilAmp = compressedOrPaddled ? 0.045 : 0.14;
         const coilWave = Math.abs(Math.sin(t * Math.PI * 10.0));
-        rad += (coilWave - 0.5) * (compressedOrPaddled ? 0.18 : 0.55);
         groove = 0.9 + coilAmp * coilWave;
       } else if (technique === "PINCHING") {
-        // Gentle organic thumb-pinch undulation
         groove = 1.0 + 0.04 * Math.sin(t * Math.PI * 14.0);
       } else if (technique === "KURINUKI") {
-        // Carved thick wabi-sabi block slight taper steps
         groove = 0.94 + 0.06 * Math.cos(t * Math.PI * 7.0);
-      } else {
-        // Slab building crisp flat walls
-        groove = 1.0;
       }
 
       const shade = (0.76 + 0.24 * t) * groove;
@@ -305,12 +324,8 @@ export class LatheMeshGenerator {
         const cosT = Math.cos(theta);
         const sinT = Math.sin(theta);
 
-        let localRad = rad;
-        if (technique === "PINCHING") {
-          localRad += 0.09 * Math.sin(theta * 5.0 + t * 9.0);
-        } else if (technique === "KURINUKI") {
-          localRad += 0.16 * Math.cos(theta * 3.0 - t * 4.0);
-        }
+        let localRad = computeOuterRadiusAt(t, theta);
+        const y = computeYAt(t, theta);
 
         let lightFactor =
           0.72 + 0.28 * Math.max(0, cosT * 0.6 + sinT * 0.4 + 0.4);
@@ -320,7 +335,6 @@ export class LatheMeshGenerator {
 
         // Visual surface treatment preview on vertex colors
         if (surfaceTreatment === "SGRAFFITO") {
-          // Dark slip coat with crisp carved light body bands
           const carved = Math.sin(theta * 6.0 + t * 12.0) > 0.55;
           if (!carved) {
             cr *= 0.48;
@@ -332,7 +346,6 @@ export class LatheMeshGenerator {
             cb = Math.min(1, cb * 1.12);
           }
         } else if (surfaceTreatment === "MISHIMA") {
-          // Flush dark inlaid geometric lines in light clay
           const inlayLine = Math.abs(Math.sin(t * Math.PI * 6.0)) < 0.16;
           if (inlayLine) {
             cr *= 0.35;
@@ -340,7 +353,6 @@ export class LatheMeshGenerator {
             cb *= 0.52;
           }
         } else if (surfaceTreatment === "SLIP_TRAILING") {
-          // Raised contrasting ivory dots/ribbons
           const trailRidge =
             Math.sin(theta * 8.0) > 0.65 && Math.sin(t * Math.PI * 8.0) > 0.0;
           if (trailRidge) {
@@ -350,7 +362,6 @@ export class LatheMeshGenerator {
             cb = 0.85;
           }
         } else if (surfaceTreatment === "NERIKOMI") {
-          // Marbled / agateware colored clay strata through wall
           const marble = Math.sin(theta * 3.0 + t * 14.0);
           if (marble > 0.3) {
             cr = 0.28;
@@ -362,8 +373,10 @@ export class LatheMeshGenerator {
             cb = 0.80;
           }
         } else if (surfaceTreatment === "BURNISHING") {
-          // Specular satin highlight band
-          lightFactor = 0.8 + 0.38 * Math.pow(Math.max(0, cosT * 0.7 + sinT * 0.5 + 0.2), 2.0);
+          lightFactor =
+            0.8 +
+            0.38 *
+              Math.pow(Math.max(0, cosT * 0.7 + sinT * 0.5 + 0.2), 2.0);
         }
 
         const f = shade * lightFactor;
@@ -394,31 +407,13 @@ export class LatheMeshGenerator {
       }
     }
 
-    // 2. TRUE CURVED INNER CAVITY WALL (mirrors outer Catmull-Rom profile inset by wallThicknessCm!)
-    //    Guaranteed strictly inside outer wall at EVERY height t so it never self-intersects!
+    // 2. TRUE CURVED INNER CAVITY WALL (mirrors outer freeform profile inset by wallThicknessCm!)
     const rimWallThicknessCm = technique === "KURINUKI" ? 1.35 : 0.65;
     const floorStartT = 0.14;
     const innerRings = Math.max(6, Math.round(effectiveHeightRings * 0.7));
 
-    const computeOuterRadiusAt = (tVal: number, theta: number): number => {
-      let rVal = Math.max(
-        0.9,
-        this.interpolateRadiusCm(actualRadiiMm, tVal) - wallInsetCm
-      );
-      if (technique === "COILING") {
-        const coilWave = Math.abs(Math.sin(tVal * Math.PI * 10.0));
-        rVal += (coilWave - 0.5) * (compressedOrPaddled ? 0.18 : 0.55);
-      } else if (technique === "PINCHING") {
-        rVal += 0.09 * Math.sin(theta * 5.0 + tVal * 9.0);
-      } else if (technique === "KURINUKI") {
-        rVal += 0.16 * Math.cos(theta * 3.0 - tVal * 4.0);
-      }
-      return Math.max(0.85, rVal);
-    };
-
     const computeInnerRadiusAt = (tVal: number, theta: number): number => {
       const outerR = computeOuterRadiusAt(tVal, theta);
-      // Taper gently toward the interior floor for an authentic curved potter's interior
       const floorCurve =
         tVal < floorStartT + 0.08
           ? 0.88 + 0.12 * ((tVal - floorStartT) / 0.08)
@@ -426,7 +421,7 @@ export class LatheMeshGenerator {
       return Math.max(0.35, (outerR - rimWallThicknessCm) * floorCurve);
     };
 
-    // 2a. Smooth Top Rim Lip connecting outer rim (t=1) to inner rim (t=1), facing +Y
+    // 2a. Smooth Undulating Top Rim Lip connecting outer rim (t=1) to inner rim (t=1), facing +Y
     const lipStart = vertices.length / 10;
     for (let c = 0; c <= effectiveRadialSegs; c++) {
       const theta = (c / effectiveRadialSegs) * Math.PI * 2.0;
@@ -434,11 +429,11 @@ export class LatheMeshGenerator {
       const sinT = Math.sin(theta);
       const outerRimR = computeOuterRadiusAt(1.0, theta);
       const innerRimR = computeInnerRadiusAt(1.0, theta);
+      const rimY = computeYAt(1.0, theta);
 
-      // Outer rim edge
       vertices.push(
         cosT * outerRimR,
-        actualHeightCm,
+        rimY,
         sinT * outerRimR,
         0,
         1,
@@ -448,10 +443,9 @@ export class LatheMeshGenerator {
         Math.min(1, baseColor.b * 1.14),
         1.0
       );
-      // Inner rim edge
       vertices.push(
         cosT * innerRimR,
-        actualHeightCm,
+        rimY,
         sinT * innerRimR,
         0,
         1,
@@ -467,7 +461,6 @@ export class LatheMeshGenerator {
       const i0 = o0 + 1;
       const o1 = lipStart + (c + 1) * 2;
       const i1 = o1 + 1;
-      // (i0 - o0) x (o1 - o0) points +Y (upward)
       indices.push(o0, i0, o1);
       indices.push(i0, i1, o1);
     }
@@ -477,8 +470,6 @@ export class LatheMeshGenerator {
     for (let ir = 0; ir <= innerRings; ir++) {
       const u = ir / innerRings;
       const tVal = floorStartT + u * (1.0 - floorStartT);
-      const y = tVal * actualHeightCm;
-      // Smooth warm interior gradient (brighter near rim, soft warm shadow at bottom — stays solid on SPECS!)
       const shade = 0.66 + 0.28 * u;
 
       for (let c = 0; c <= effectiveRadialSegs; c++) {
@@ -486,6 +477,7 @@ export class LatheMeshGenerator {
         const cosT = Math.cos(theta);
         const sinT = Math.sin(theta);
         const innerR = computeInnerRadiusAt(tVal, theta);
+        const y = computeYAt(tVal, theta);
         const lightFactor =
           0.78 + 0.22 * Math.max(0, -cosT * 0.5 - sinT * 0.4 + 0.5);
         const f = shade * lightFactor;
@@ -511,18 +503,17 @@ export class LatheMeshGenerator {
         const tl = innerWallStart + (ir + 1) * cols + c;
         const br = innerWallStart + ir * cols + (c + 1);
         const tr = innerWallStart + (ir + 1) * cols + (c + 1);
-        // Reversed winding from outer wall so triangles face INWARD toward cavity center!
         indices.push(tl, bl, tr);
         indices.push(tr, bl, br);
       }
     }
 
-    // 2c. Solid Inner Floor Cap at y = floorStartT * actualHeightCm (facing +Y)
-    const floorY = floorStartT * actualHeightCm;
+    // 2c. Solid Inner Floor Cap at floorStartT (facing +Y)
+    const floorCenterY = actualHeightCm * floorStartT;
     const floorCenterIdx = vertices.length / 10;
     vertices.push(
       0,
-      floorY,
+      floorCenterY,
       0,
       0,
       1,
@@ -538,9 +529,10 @@ export class LatheMeshGenerator {
       const cosT = Math.cos(theta);
       const sinT = Math.sin(theta);
       const floorR = computeInnerRadiusAt(floorStartT, theta);
+      const edgeY = computeYAt(floorStartT, theta);
       vertices.push(
         cosT * floorR,
-        floorY,
+        edgeY,
         sinT * floorR,
         0,
         1,
