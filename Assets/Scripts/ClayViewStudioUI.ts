@@ -66,19 +66,19 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   @ui.separator
   @ui.group_start("Settings")
   @input
-  @hint("Calibrated card width in cm (must be <= 9.0 cm at x=+15, z=-58)")
+  @hint("Calibrated card width in cm (must stay inside SPECS +/-20.5cm horizontal FOV)")
   @widget(new SliderWidget(7.0, 11.0, 0.5))
-  public cardWidthCm: number = 9.0;
+  public cardWidthCm: number = 8.4;
 
   @input
   @hint("Inner horizontal/vertical padding in cm")
   @widget(new SliderWidget(0.3, 1.2, 0.1))
-  public paddingCm: number = 0.55;
+  public paddingCm: number = 0.45;
 
   @input
   @hint("Row spacing in cm")
   @widget(new SliderWidget(0.2, 1.0, 0.05))
-  public rowGapCm: number = 0.4;
+  public rowGapCm: number = 0.28;
 
   @input
   @hint("Primary Ivory text color for additive LCOS display")
@@ -111,6 +111,9 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   private _onToggleWireframe = new Event<void>();
   private _onCyclePreset = new Event<void>();
   private _onResetClay = new Event<void>();
+  private _onStageAction = new Event<void>();
+  private _onCycleClayMass = new Event<void>();
+  private _onCycleSeriesCount = new Event<void>();
 
   public get onCycleShrinkage(): PublicApi<void> {
     return this._onCycleShrinkage.publicApi();
@@ -127,12 +130,26 @@ export class ClayViewStudioUI extends BaseScriptComponent {
   public get onResetClay(): PublicApi<void> {
     return this._onResetClay.publicApi();
   }
+  public get onStageAction(): PublicApi<void> {
+    return this._onStageAction.publicApi();
+  }
+  public get onCycleClayMass(): PublicApi<void> {
+    return this._onCycleClayMass.publicApi();
+  }
+  public get onCycleSeriesCount(): PublicApi<void> {
+    return this._onCycleSeriesCount.publicApi();
+  }
 
+  private stageBadgeText: Text | null = null;
+  private stageActionLabelText: Text | null = null;
+  private clayMassBtnLabelText: Text | null = null;
+  private seriesCountBtnLabelText: Text | null = null;
   private shrinkageBadgeText: Text | null = null;
   private pieceCounterText: Text | null = null;
   private bellyZoneStatusText: Text | null = null;
   private matchPercentText: Text | null = null;
   private presetBtnLabelText: Text | null = null;
+  private hintCaptionText: Text | null = null;
   private statusIconMat: Material | null = null;
   private built: boolean = false;
 
@@ -209,29 +226,40 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       this.ivoryColor
     );
 
-    // 2. ShrinkageBadgeText ("12% STONEWARE" -> "14% PORCELAIN")
+    // 2. StageBadgeText ("STEP 1/3 · DETECT TABLE" -> "STEP 2/3 · SELECT CLAY" -> "STEP 3/3 · THROW CLAY")
+    const stageBadge = this.addColumnText(
+      content,
+      "StageBadgeText",
+      "STEP 1/3 · DETECT TABLE",
+      "Caption",
+      0.85,
+      this.amberColor
+    );
+    this.stageBadgeText = stageBadge.text;
+
+    // 3. ShrinkageBadgeText ("12% STONEWARE" -> "14% PORCELAIN")
     const badge = this.addColumnText(
       content,
       "ShrinkageBadgeText",
       "12% STONEWARE",
       "Callout",
-      1.1,
+      0.95,
       this.cyanColor
     );
     this.shrinkageBadgeText = badge.text;
 
-    // 3. PieceCounterText ("Piece 1 of 6" -> "Piece 2 of 6")
+    // 4. PieceCounterText ("Piece 1 of 6" -> "Piece 2 of 6")
     const counter = this.addColumnText(
       content,
       "PieceCounterText",
       "Piece 1 of 6",
       "Body",
-      1.0,
+      0.88,
       this.ivoryColor
     );
     this.pieceCounterText = counter.text;
 
-    // 4. Status Row: Status Icon + BellyZoneStatusText ("MATCH_TEAL" / "OVER_CORAL")
+    // 5. Status Row: Status Icon + BellyZoneStatusText ("MATCH_TEAL" / "OVER_CORAL")
     const statusRow = global.scene.createSceneObject("StatusRow");
     statusRow.setParent(content);
     const statusFlex = statusRow.createComponent(
@@ -242,18 +270,18 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     statusFlex.justifyContent = FlexJustify.Center;
     statusFlex.columnGap = 0.25;
     statusFlex.width = innerW;
-    statusFlex.height = 1.1;
+    statusFlex.height = 0.95;
     const statusItem = statusRow.createComponent(
       FlexItem.getTypeName()
     ) as FlexItem;
     statusItem.alignSelf = FlexAlignSelf.Stretch;
-    statusItem.overrideHeight = 1.1;
+    statusItem.overrideHeight = 0.95;
 
     const statusIcon = this.addIcon(
       statusRow,
       "ToleranceIcon",
       ICON_CHECK,
-      0.85,
+      0.78,
       this.tealColor
     );
     this.statusIconMat = statusIcon.material;
@@ -267,20 +295,50 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     );
     this.bellyZoneStatusText = bellyStatus.text;
 
-    // 5. MatchPercentText ("100%")
+    // 6. MatchPercentText ("100%")
     const match = this.addColumnText(
       content,
       "MatchPercentText",
       "100%",
-      "Headline1",
-      1.45,
+      "Headline2",
+      1.25,
       this.ivoryColor
     );
     this.matchPercentText = match.text;
 
-    // 6. Primary Action Buttons (UIKit Button = SIK Interactable for mouse & LEAF)
-    const btnW = Math.min(7.8, innerW);
-    const btnH = 1.45;
+    // 7. Guided Flow & Studio Controls (UIKit Buttons = SIK Interactable for mouse & LEAF)
+    const btnW = Math.min(7.4, innerW);
+    const btnH = 1.2;
+
+    const stageBtn = this.addActionButton(
+      content,
+      "StageActionBtn",
+      "Lock Table",
+      btnW,
+      btnH,
+      () => this._onStageAction.invoke()
+    );
+    this.stageActionLabelText = stageBtn.labelText;
+
+    const massBtn = this.addActionButton(
+      content,
+      "ClayMassBtn",
+      "Clay: 900g",
+      btnW,
+      btnH,
+      () => this._onCycleClayMass.invoke()
+    );
+    this.clayMassBtnLabelText = massBtn.labelText;
+
+    const seriesBtn = this.addActionButton(
+      content,
+      "SeriesCountBtn",
+      "Qty: 6 pcs",
+      btnW,
+      btnH,
+      () => this._onCycleSeriesCount.invoke()
+    );
+    this.seriesCountBtnLabelText = seriesBtn.labelText;
 
     this.addActionButton(
       content,
@@ -319,24 +377,16 @@ export class ClayViewStudioUI extends BaseScriptComponent {
       () => this._onToggleWireframe.invoke()
     );
 
-    this.addActionButton(
-      content,
-      "ResetClayBtn",
-      "Reset Clay",
-      btnW,
-      btnH,
-      () => this._onResetClay.invoke()
-    );
-
-    // 8. Honest Preview Stand-In Caption
-    this.addColumnText(
+    // 8. Dynamic Guided Flow Caption
+    const caption = this.addColumnText(
       content,
       "PreviewStandInCaption",
-      "Hand Tool (In/Out) + 5 Zones",
+      "1. Lock Table -> 2. Clay -> 3. Shape",
       "Caption",
-      0.85,
-      new vec4(1.0, 0.99, 0.96, 0.65)
+      0.75,
+      new vec4(1.0, 0.99, 0.96, 0.72)
     );
+    this.hintCaptionText = caption.text;
   }
 
   public updateMetrics(
@@ -344,8 +394,35 @@ export class ClayViewStudioUI extends BaseScriptComponent {
     pieceCounterLabel: string,
     bellyStatus: ToleranceStatus,
     matchPercentage: number,
-    vesselPresetName?: string
+    vesselPresetName?: string,
+    stageTitle?: string,
+    stageActionLabel?: string,
+    clayMassLabel?: string,
+    seriesQtyLabel?: string,
+    stageHintCaption?: string
   ): void {
+    if (stageTitle && this.stageBadgeText) {
+      this.stageBadgeText.text = stageTitle;
+      if (this.stageBadgeText.textFill) {
+        this.stageBadgeText.textFill.color = stageTitle.includes("3/3")
+          ? this.tealColor
+          : stageTitle.includes("2/3")
+          ? this.cyanColor
+          : this.amberColor;
+      }
+    }
+    if (stageActionLabel && this.stageActionLabelText) {
+      this.stageActionLabelText.text = stageActionLabel;
+    }
+    if (clayMassLabel && this.clayMassBtnLabelText) {
+      this.clayMassBtnLabelText.text = clayMassLabel;
+    }
+    if (seriesQtyLabel && this.seriesCountBtnLabelText) {
+      this.seriesCountBtnLabelText.text = seriesQtyLabel;
+    }
+    if (stageHintCaption && this.hintCaptionText) {
+      this.hintCaptionText.text = stageHintCaption;
+    }
     if (this.shrinkageBadgeText) {
       this.shrinkageBadgeText.text = shrinkageLabel;
     }

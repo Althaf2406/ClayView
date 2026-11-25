@@ -10,13 +10,20 @@ export interface PieceRecord {
 
 export class SeriesConsistencyTracker {
   private readonly history: PieceRecord[] = [];
-  private readonly targetSeriesCount: number;
+  private targetSeriesCount: number;
 
   constructor(targetSeriesCount: number = 6) {
     if (targetSeriesCount < 1) {
       throw new Error("Target series count must be at least 1.");
     }
     this.targetSeriesCount = targetSeriesCount;
+  }
+
+  public setTargetSeriesCount(count: number): void {
+    if (count < 1) {
+      throw new Error("Target series count must be at least 1.");
+    }
+    this.targetSeriesCount = count;
   }
 
   public recordPiece(

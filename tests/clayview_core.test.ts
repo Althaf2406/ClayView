@@ -19,6 +19,9 @@ import {
 import {
   ClayWheelPhysicsEngine,
 } from "../Assets/Scripts/Core/ClayWheelPhysicsEngine";
+import {
+  ClayStudioFlowEngine,
+} from "../Assets/Scripts/Core/ClayStudioFlowEngine";
 
 describe("ClayView - Pure TypeScript Core Engine", () => {
   describe("KilnShrinkageEngine", () => {
@@ -315,6 +318,57 @@ describe("ClayView - Pure TypeScript Core Engine", () => {
       assert.equal(outsideRes.deformed, true);
       assert.equal(outsideRes.state.zoneOffsetsMm[2] < 0, true);
       assert.equal(outsideRes.state.actualHeightCm > initial.actualHeightCm, true);
+    });
+  });
+
+  describe("ClayStudioFlowEngine", () => {
+    const targetRadiiMm = [45.45, 70.45, 85.23, 77.27, 85.23];
+
+    test("builds raw Globe Piece clay mound scaled by selected clay mass", () => {
+      const small = ClayStudioFlowEngine.buildGlobePieceState(
+        targetRadiiMm,
+        "SMALL_450G"
+      );
+      const med = ClayStudioFlowEngine.buildGlobePieceState(
+        targetRadiiMm,
+        "MEDIUM_900G"
+      );
+      const large = ClayStudioFlowEngine.buildGlobePieceState(
+        targetRadiiMm,
+        "LARGE_1500G"
+      );
+
+      assert.equal(small.actualHeightCm < med.actualHeightCm, true);
+      assert.equal(med.actualHeightCm < large.actualHeightCm, true);
+      // Medium 900g globe belly starts right near target belly (<= 2mm) while rim starts closed (< target rim)
+      assert.equal(Math.abs(med.zoneOffsetsMm[2]) <= 2.0, true);
+      assert.equal(med.zoneOffsetsMm[4] < -40.0, true);
+    });
+
+    test("computes 360-degree orbital camera-facing basis around wheel anchor", () => {
+      const anchor = { x: 0, z: -55 };
+
+      // Camera at origin (0, 0): right vector is +X, yaw = 0
+      const frontBasis = ClayStudioFlowEngine.computeOrbitalBasis(anchor, {
+        x: 0,
+        z: 0,
+      });
+      assert.equal(frontBasis.toCamX, 0);
+      assert.equal(frontBasis.toCamZ, 1);
+      assert.equal(frontBasis.rightX, 1);
+      assert.equal(frontBasis.rightZ, 0);
+      assert.equal(frontBasis.yawRad, 0);
+
+      // Camera walked to right side (+55, -55): toCam is +X, user's right is -Z, yaw = +90 deg
+      const sideBasis = ClayStudioFlowEngine.computeOrbitalBasis(anchor, {
+        x: 55,
+        z: -55,
+      });
+      assert.equal(Math.round(sideBasis.toCamX), 1);
+      assert.equal(Math.round(sideBasis.toCamZ), 0);
+      assert.equal(Math.round(sideBasis.rightX), 0);
+      assert.equal(Math.round(sideBasis.rightZ), -1);
+      assert.equal(Math.abs(sideBasis.yawRad - Math.PI / 2) < 0.01, true);
     });
   });
 });

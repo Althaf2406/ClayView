@@ -22,6 +22,12 @@ import {
   ClayWheelPhysicsEngine,
   HandContactMode,
 } from "./Core/ClayWheelPhysicsEngine";
+import {
+  ClayMassId,
+  ClayStudioFlowEngine,
+  OrbitalBasis,
+  StudioFlowStage,
+} from "./Core/ClayStudioFlowEngine";
 import { ClayViewStudioUI } from "./ClayViewStudioUI";
 import { Interactable } from "SpectaclesInteractionKit.lspkg/Components/Interaction/Interactable/Interactable";
 import { DragInteractorEvent } from "SpectaclesInteractionKit.lspkg/Core/Interactor/InteractorEvent";
@@ -86,14 +92,28 @@ export class TerraFormController extends BaseScriptComponent {
     "STONEWARE_12"
   );
 
-  // Coupled viscoelastic clay state (5 zone offsets in mm + live actual height in cm)
-  private clayState: ClayDeformationState = {
-    zoneOffsetsMm: [0, 0, 0, 0, 0],
-    actualHeightCm: KilnShrinkageEngine.computeWetTarget(
-      KilnShrinkageEngine.getPreset(0),
-      "STONEWARE_12"
-    ).wetHeightCm,
+  // 3-Stage Guided Pottery Studio Flow: DETECT_TABLE -> SELECT_CLAY -> THROWING
+  private flowStage: StudioFlowStage = "DETECT_TABLE";
+  private selectedClayMass: ClayMassId = "MEDIUM_900G";
+
+  // 360-degree camera-following orbital basis around WheelCenterAnchor
+  private currentOrbitalBasis: OrbitalBasis = {
+    toCamX: 0,
+    toCamZ: 1,
+    rightX: 1,
+    rightZ: 0,
+    yawRad: 0,
   };
+
+  // Coupled viscoelastic clay state — starts as a raw rounded Globe Piece mound!
+  private clayState: ClayDeformationState =
+    ClayStudioFlowEngine.buildGlobePieceState(
+      KilnShrinkageEngine.computeWetTarget(
+        KilnShrinkageEngine.getPreset(0),
+        "STONEWARE_12"
+      ).wetRadiiMm,
+      "MEDIUM_900G"
+    );
 
   private seriesTracker: SeriesConsistencyTracker =
     new SeriesConsistencyTracker(6);
@@ -102,11 +122,19 @@ export class TerraFormController extends BaseScriptComponent {
   private mainCameraObj: SceneObject | null = null;
   private wheelCenterAnchor: SceneObject | null = null;
   private wheelBatObj: SceneObject | null = null;
+  private tableReticleObj: SceneObject | null = null;
+  private tableReticleLabel: Text | null = null;
+  private tableReticlePulsePhase: number = 0;
   private spinningClayObj: SceneObject | null = null;
   private ghostProfileMeshObj: SceneObject | null = null;
   private caliperGaugeLineObj: SceneObject | null = null;
   private studioCardAnchor: SceneObject | null = null;
   private edgeArrowObj: SceneObject | null = null;
+
+  // Optional WorldQueryModule hit-test session for SPECS table detection (Step 1)
+  private worldQueryModule: any = null;
+  private hitTestSession: any = null;
+  private worldQueryCooldownSec: number = 0;
 
   // All 5 zone handles + top height handle
   private zoneHandles: ZoneHandleSlot[] = [];
@@ -119,7 +147,8 @@ export class TerraFormController extends BaseScriptComponent {
   private potterHandToolInteractable: Interactable | null = null;
   private potterHandToolBuilder: MeshBuilder | null = null;
   private potterHandToolLabel: Text | null = null;
-  private potterHandToolLocalPos: vec3 = new vec3(-5.0, 21.5, 0.0);
+  private potterToolPlaneX: number = -5.2;
+  private potterToolPlaneY: number = 14.0;
 
   // Live glowing horizontal SculptContactRing on the clay at active hand height
   private contactRingObj: SceneObject | null = null;
@@ -164,6 +193,8 @@ export class TerraFormController extends BaseScriptComponent {
     }
 
     this.ensureSceneHierarchy();
+    this.initTableWorldQuery();
+    this.updateOrbitalCameraLayout();
     this.recomputeAndRefreshVisuals();
 
     this.createEvent("OnStartEvent").bind(() => {
@@ -176,6 +207,7 @@ export class TerraFormController extends BaseScriptComponent {
 
     this.createEvent("OnDestroyEvent").bind(() => {
       this.stopVoiceRecognition();
+      this.stopTableWorldQuery();
     });
   }
 
@@ -237,6 +269,25 @@ export class TerraFormController extends BaseScriptComponent {
       new vec3(0.0, 0.0, 0.0)
     );
     this.buildWheelBatMesh();
+
+    // 2b. TableReticleRing (Step 1: DETECT_TABLE glowing table placement guide)
+    this.tableReticleObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "TableReticleRing",
+      new vec3(0.0, 0.0, 0.0)
+    );
+    this.buildTableReticleMesh();
+    const reticleLabelObj = this.getOrCreateChildObject(
+      this.wheelCenterAnchor,
+      "TableReticleLabel",
+      new vec3(0.0, 2.0, 12.0)
+    );
+    this.tableReticleLabel = this.getOrCreateText(
+      reticleLabelObj,
+      "TABLE DETECTED · TAP LOCK TABLE",
+      15,
+      new vec4(0.29, 0.95, 1.0, 1.0)
+    );
 
     // 3. SpinningClayMesh (procedural rotating hollow wet clay vessel stand-in)
     this.spinningClayObj = this.getOrCreateChildObject(
@@ -338,15 +389,12 @@ export class TerraFormController extends BaseScriptComponent {
     this.heightHandleBuilder = heightBuilt.meshBuilder;
 
     // 9. Free 3D PotterHandTool — grab & dip INSIDE from top to push outward, or squeeze OUTSIDE!
-    this.potterHandToolLocalPos = new vec3(
-      -5.2,
-      this.wetTarget.wetHeightCm + 2.4,
-      0.0
-    );
+    this.potterToolPlaneX = -5.2;
+    this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
     this.potterHandToolObj = this.getOrCreateChildObject(
       this.wheelCenterAnchor,
       "PotterHandTool",
-      this.potterHandToolLocalPos
+      new vec3(this.potterToolPlaneX, this.potterToolPlaneY, 0.0)
     );
     const handToolBuilt = this.setupDiamondHandle(
       this.potterHandToolObj,
@@ -369,10 +417,10 @@ export class TerraFormController extends BaseScriptComponent {
       new vec4(1.0, 0.85, 0.45, 1.0)
     );
 
-    // 10. StudioCardAnchor at (+15.0, -21.0, -58.0) cm (calibrated 9.0 cm width)
+    // 10. StudioCardAnchor (orbits 360 deg around WheelCenterAnchor to face MainCamera)
     this.studioCardAnchor = this.getOrCreateRootObject(
       "StudioCardAnchor",
-      new vec3(15.0, -21.0, -58.0)
+      new vec3(15.0, -17.5, -58.0)
     );
     this.studioCardAnchor
       .getTransform()
@@ -435,6 +483,95 @@ export class TerraFormController extends BaseScriptComponent {
       rmv.mainMaterial = this.wireframeMaterial;
     }
     builder.updateMesh();
+  }
+
+  private buildTableReticleMesh(): void {
+    if (!this.tableReticleObj) return;
+    const geom = LatheMeshGenerator.buildTableReticle(
+      14.5,
+      9.5,
+      OPTICAL_PALETTE.CYAN
+    );
+    const builder = new MeshBuilder([
+      { name: "position", components: 3 },
+      { name: "color", components: 4 },
+    ]);
+    builder.topology = MeshTopology.Lines;
+    builder.indexType = MeshIndexType.UInt16;
+    builder.appendVerticesInterleaved(geom.vertices);
+    builder.appendIndices(geom.indices);
+
+    const rmv =
+      (this.tableReticleObj.getComponent(
+        "Component.RenderMeshVisual"
+      ) as RenderMeshVisual) ||
+      (this.tableReticleObj.createComponent(
+        "Component.RenderMeshVisual"
+      ) as RenderMeshVisual);
+    rmv.mesh = builder.getMesh();
+    if (this.wireframeMaterial) {
+      rmv.mainMaterial = this.wireframeMaterial;
+    }
+    builder.updateMesh();
+  }
+
+  private initTableWorldQuery(): void {
+    try {
+      this.worldQueryModule = require("LensStudio:WorldQueryModule");
+      if (
+        this.worldQueryModule &&
+        typeof HitTestSessionOptions !== "undefined"
+      ) {
+        const opts = HitTestSessionOptions.create();
+        opts.filter = true;
+        this.hitTestSession =
+          this.worldQueryModule.createHitTestSessionWithOptions(opts);
+        if (this.hitTestSession && typeof this.hitTestSession.start === "function") {
+          this.hitTestSession.start();
+        }
+      }
+    } catch (_e) {
+      // Interactive Preview gracefully uses the calibrated preview table stand-in
+      this.worldQueryModule = null;
+      this.hitTestSession = null;
+    }
+  }
+
+  private pollTableWorldQuery(dt: number): void {
+    if (
+      this.flowStage !== "DETECT_TABLE" ||
+      !this.hitTestSession ||
+      !this.mainCameraObj ||
+      !this.wheelCenterAnchor
+    ) {
+      return;
+    }
+    this.worldQueryCooldownSec -= dt;
+    if (this.worldQueryCooldownSec > 0) return;
+    this.worldQueryCooldownSec = 0.15;
+
+    try {
+      const camT = this.mainCameraObj.getTransform();
+      const rayStart = camT.getWorldPosition();
+      const rayEnd = rayStart.add(camT.back.uniformScale(140.0));
+      this.hitTestSession.hitTest(rayStart, rayEnd, (hitResult: any) => {
+        if (
+          this.flowStage !== "DETECT_TABLE" ||
+          !hitResult ||
+          !hitResult.position ||
+          !this.wheelCenterAnchor
+        ) {
+          return;
+        }
+        // Only snap to roughly horizontal table surfaces (normal.y > 0.7)
+        if (hitResult.normal && hitResult.normal.y < 0.7) return;
+        this.wheelCenterAnchor
+          .getTransform()
+          .setWorldPosition(hitResult.position);
+      });
+    } catch (_e) {
+      // Ignore transient hit-test errors in preview
+    }
   }
 
   private setupDiamondHandle(
@@ -624,6 +761,18 @@ export class TerraFormController extends BaseScriptComponent {
   private bindUIHandlesAndVoice(): void {
     // 1. Studio Card UI Buttons
     if (this.studioUI) {
+      this.studioUI.onStageAction.add(() => {
+        this.playUiClick();
+        this.handleStageAction();
+      });
+      this.studioUI.onCycleClayMass.add(() => {
+        this.playUiClick();
+        this.cycleClayMass();
+      });
+      this.studioUI.onCycleSeriesCount.add(() => {
+        this.playUiClick();
+        this.cycleSeriesCount();
+      });
       this.studioUI.onCycleShrinkage.add(() => {
         this.playUiClick();
         this.cycleShrinkagePreset();
@@ -646,15 +795,20 @@ export class TerraFormController extends BaseScriptComponent {
       });
     }
 
-    // 2. All 5 Radial Zone Sculpting Handles (now coupled via ClayWheelPhysicsEngine!)
+    // 2. All 5 Radial Zone Sculpting Handles (coupled via ClayWheelPhysicsEngine + 360 orbital right axis!)
     for (let i = 0; i < this.zoneHandles.length; i++) {
       const slot = this.zoneHandles[i];
       slot.interactable.onDragUpdate.add((event: DragInteractorEvent) => {
         const dragVec = event.dragVector;
         if (!dragVec) return;
 
-        // Horizontal X drag applies radial clay force -> couples neighbors + conserves volume!
-        const deltaMm = dragVec.x * 1.8;
+        this.ensureThrowingStage();
+
+        // Project world drag onto user's screen-right orbital axis so dragging works from ANY 360 angle!
+        const dragRight =
+          dragVec.x * this.currentOrbitalBasis.rightX +
+          dragVec.z * this.currentOrbitalBasis.rightZ;
+        const deltaMm = dragRight * 1.8;
         this.clayState = ClayWheelPhysicsEngine.applyRadialForce(
           this.wetTarget.wetRadiiMm,
           this.clayState,
@@ -686,6 +840,7 @@ export class TerraFormController extends BaseScriptComponent {
         (event: DragInteractorEvent) => {
           const dragVec = event.dragVector;
           if (!dragVec) return;
+          this.ensureThrowingStage();
           this.clayState = ClayWheelPhysicsEngine.applyVerticalForce(
             this.wetTarget.wetRadiiMm,
             this.clayState,
@@ -704,22 +859,26 @@ export class TerraFormController extends BaseScriptComponent {
           const dragVec = event.dragVector;
           if (!dragVec || !this.potterHandToolObj) return;
 
+          this.ensureThrowingStage();
+
           const moveScale = 0.65;
-          const dx = dragVec.x * moveScale;
+          const dragRight =
+            dragVec.x * this.currentOrbitalBasis.rightX +
+            dragVec.z * this.currentOrbitalBasis.rightZ;
+          const dx = dragRight * moveScale;
           const dy = dragVec.y * moveScale;
 
           const nextX = Math.max(
             -13.5,
-            Math.min(13.5, this.potterHandToolLocalPos.x + dx)
+            Math.min(13.5, this.potterToolPlaneX + dx)
           );
           const nextY = Math.max(
             0.6,
-            Math.min(26.5, this.potterHandToolLocalPos.y + dy)
+            Math.min(26.5, this.potterToolPlaneY + dy)
           );
-          this.potterHandToolLocalPos = new vec3(nextX, nextY, 0.0);
-          this.potterHandToolObj
-            .getTransform()
-            .setLocalPosition(this.potterHandToolLocalPos);
+          this.potterToolPlaneX = nextX;
+          this.potterToolPlaneY = nextY;
+          this.syncPotterHandToolTransform();
 
           const contact = ClayWheelPhysicsEngine.applyHandToolContact(
             this.wetTarget.wetRadiiMm,
@@ -732,6 +891,7 @@ export class TerraFormController extends BaseScriptComponent {
           this.updatePotterHandToolVisual(contact.mode);
 
           if (contact.deformed) {
+            this.ensureThrowingStage();
             this.clayState = contact.state;
             this.updateContactRing(contact.contactHeightCm, contact.mode);
             this.recomputeAndRefreshVisuals();
@@ -809,6 +969,7 @@ export class TerraFormController extends BaseScriptComponent {
             1.6
           );
           if (contact.deformed) {
+            this.ensureThrowingStage();
             this.clayState = contact.state;
             this.updateContactRing(contact.contactHeightCm, contact.mode);
             this.recomputeAndRefreshVisuals();
@@ -875,6 +1036,12 @@ export class TerraFormController extends BaseScriptComponent {
   public handleVoiceTranscript(rawTranscript: string): void {
     const normalized = rawTranscript.toLowerCase().trim();
     if (
+      normalized.includes("lock table") ||
+      normalized.includes("start throwing")
+    ) {
+      this.playUiClick();
+      this.handleStageAction();
+    } else if (
       normalized.includes("next piece") ||
       normalized.includes("save piece")
     ) {
@@ -899,10 +1066,73 @@ export class TerraFormController extends BaseScriptComponent {
     ) {
       this.playUiClick();
       this.cycleVesselPreset();
-    } else if (normalized.includes("reset clay")) {
+    } else if (
+      normalized.includes("reset clay") ||
+      normalized.includes("reset globe")
+    ) {
       this.playUiClick();
       this.resetClayDeformation();
+    } else if (
+      normalized.includes("clay weight") ||
+      normalized.includes("more clay")
+    ) {
+      this.playUiClick();
+      this.cycleClayMass();
     }
+  }
+
+  public handleStageAction(): void {
+    if (this.flowStage === "DETECT_TABLE") {
+      this.stopTableWorldQuery();
+      this.flowStage = "SELECT_CLAY";
+      this.recomputeAndRefreshVisuals();
+    } else if (this.flowStage === "SELECT_CLAY") {
+      this.flowStage = "THROWING";
+      this.recomputeAndRefreshVisuals();
+    } else {
+      this.resetClayDeformation();
+    }
+  }
+
+  private ensureThrowingStage(): void {
+    if (this.flowStage !== "THROWING") {
+      this.stopTableWorldQuery();
+      this.flowStage = "THROWING";
+    }
+  }
+
+  private stopTableWorldQuery(): void {
+    try {
+      if (this.hitTestSession && typeof this.hitTestSession.stop === "function") {
+        this.hitTestSession.stop();
+      }
+    } catch (_e) {
+      // Ignore cleanup errors
+    }
+  }
+
+  public cycleClayMass(): void {
+    this.selectedClayMass = ClayStudioFlowEngine.nextMassPreset(
+      this.selectedClayMass
+    );
+    // Rebuild raw Globe Piece mound whenever selecting clay mass
+    if (this.flowStage !== "THROWING") {
+      this.clayState = ClayStudioFlowEngine.buildGlobePieceState(
+        this.wetTarget.wetRadiiMm,
+        this.selectedClayMass
+      );
+      this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
+      this.syncPotterHandToolTransform();
+    }
+    this.recomputeAndRefreshVisuals();
+  }
+
+  public cycleSeriesCount(): void {
+    const nextQty = ClayStudioFlowEngine.nextSeriesCount(
+      this.seriesTracker.getTargetSeriesCount()
+    );
+    this.seriesTracker.setTargetSeriesCount(nextQty);
+    this.recomputeAndRefreshVisuals();
   }
 
   public cycleShrinkagePreset(): void {
@@ -911,22 +1141,24 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   public setShrinkagePreset(clayType: ClayType): void {
-    const prevTargetHeight = this.wetTarget.wetHeightCm;
-    const heightDelta = this.clayState.actualHeightCm - prevTargetHeight;
+    // Preserve physical wet clay radii & height when changing holographic shrinkage target
+    const prevActualRadiiMm = this.getActualRadiiMm();
+    const prevActualHeightCm = this.clayState.actualHeightCm;
     this.currentClayType = clayType;
     this.wetTarget = KilnShrinkageEngine.computeWetTarget(
       this.currentVesselSpec,
       this.currentClayType
     );
+    const nextOffsets: [number, number, number, number, number] = [
+      prevActualRadiiMm[0] - this.wetTarget.wetRadiiMm[0],
+      prevActualRadiiMm[1] - this.wetTarget.wetRadiiMm[1],
+      prevActualRadiiMm[2] - this.wetTarget.wetRadiiMm[2],
+      prevActualRadiiMm[3] - this.wetTarget.wetRadiiMm[3],
+      prevActualRadiiMm[4] - this.wetTarget.wetRadiiMm[4],
+    ];
     this.clayState = {
-      zoneOffsetsMm: this.clayState.zoneOffsetsMm,
-      actualHeightCm: Math.max(
-        ClayWheelPhysicsEngine.MIN_HEIGHT_CM,
-        Math.min(
-          ClayWheelPhysicsEngine.MAX_HEIGHT_CM,
-          this.wetTarget.wetHeightCm + heightDelta
-        )
-      ),
+      zoneOffsetsMm: nextOffsets,
+      actualHeightCm: prevActualHeightCm,
     };
     this.recomputeAndRefreshVisuals();
   }
@@ -946,22 +1178,16 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   public resetClayDeformation(): void {
-    this.clayState = {
-      zoneOffsetsMm: [0, 0, 0, 0, 0],
-      actualHeightCm: this.wetTarget.wetHeightCm,
-    };
+    // Drop a fresh raw rounded Globe Piece clay mound on the spinning wheel!
+    this.clayState = ClayStudioFlowEngine.buildGlobePieceState(
+      this.wetTarget.wetRadiiMm,
+      this.selectedClayMass
+    );
     this.tealStableSeconds = 0;
     this.chimePlayedForCurrentHold = false;
-    this.potterHandToolLocalPos = new vec3(
-      -5.2,
-      this.wetTarget.wetHeightCm + 2.4,
-      0.0
-    );
-    if (this.potterHandToolObj) {
-      this.potterHandToolObj
-        .getTransform()
-        .setLocalPosition(this.potterHandToolLocalPos);
-    }
+    this.potterToolPlaneX = -5.2;
+    this.potterToolPlaneY = this.clayState.actualHeightCm + 3.2;
+    this.syncPotterHandToolTransform();
     this.updatePotterHandToolVisual("NONE");
     if (this.contactRingObj) {
       this.contactRingObj.enabled = false;
@@ -987,6 +1213,26 @@ export class TerraFormController extends BaseScriptComponent {
   }
 
   private onUpdate(dt: number): void {
+    // 0. 360-degree camera-following orbital layout for UI Card, Caliper Gauge, and Handles
+    this.updateOrbitalCameraLayout();
+
+    // 0b. Step 1 (DETECT_TABLE): gently pulse & rotate table reticle + poll SPECS WorldQuery
+    if (this.flowStage === "DETECT_TABLE") {
+      this.tableReticlePulsePhase += dt * 2.4;
+      if (this.tableReticleObj) {
+        const pulse = 1.0 + 0.035 * Math.sin(this.tableReticlePulsePhase);
+        this.tableReticleObj
+          .getTransform()
+          .setLocalScale(new vec3(pulse, 1.0, pulse));
+        this.tableReticleObj
+          .getTransform()
+          .setLocalRotation(
+            quat.fromEulerAngles(0, -this.tableReticlePulsePhase * 0.25, 0)
+          );
+      }
+      this.pollTableWorldQuery(dt);
+    }
+
     // 1. Spin wheel bat & wet clay mesh continuously
     this.wheelSpinAngleRad =
       (this.wheelSpinAngleRad + dt * 1.6) % (Math.PI * 2);
@@ -1027,6 +1273,102 @@ export class TerraFormController extends BaseScriptComponent {
 
     // 5. Off-Screen Navigation check (DC-5: > 16.0 deg horizontal yaw away from WheelCenterAnchor)
     this.updateOffscreenGuidance();
+  }
+
+  /**
+   * Orbits StudioCardAnchor, CaliperGaugeLine, zone handles, and PotterHandTool around
+   * WheelCenterAnchor based on the user's horizontal camera position so every panel and
+   * gauge always faces the user cleanly from all 360 degrees around the pottery table.
+   */
+  private updateOrbitalCameraLayout(): void {
+    if (!this.mainCameraObj || !this.wheelCenterAnchor) return;
+
+    const camPos = this.mainCameraObj.getTransform().getWorldPosition();
+    const anchorPos = this.wheelCenterAnchor.getTransform().getWorldPosition();
+
+    const basis = ClayStudioFlowEngine.computeOrbitalBasis(
+      { x: anchorPos.x, z: anchorPos.z },
+      { x: camPos.x, z: camPos.z }
+    );
+    this.currentOrbitalBasis = basis;
+
+    const facingQuat = quat.fromEulerAngles(0, basis.yawRad, 0);
+
+    // 1. StudioCardAnchor orbits to user's right side and faces camera (-12 deg gentle inward cant)
+    if (this.studioCardAnchor) {
+      const cardRight = 13.4;
+      const cardBack = 3.0;
+      const cardWorldPos = new vec3(
+        anchorPos.x + basis.rightX * cardRight - basis.toCamX * cardBack,
+        anchorPos.y + 10.5,
+        anchorPos.z + basis.rightZ * cardRight - basis.toCamZ * cardBack
+      );
+      this.studioCardAnchor.getTransform().setWorldPosition(cardWorldPos);
+      this.studioCardAnchor
+        .getTransform()
+        .setWorldRotation(
+          quat.fromEulerAngles(0, basis.yawRad - 12 * MathUtils.DegToRad, 0)
+        );
+    }
+
+    // 2. CaliperGaugeLine orbits to user's left side and faces camera
+    if (this.caliperGaugeLineObj) {
+      this.caliperGaugeLineObj
+        .getTransform()
+        .setLocalPosition(
+          new vec3(-basis.rightX * 11.0, 0.0, -basis.rightZ * 11.0)
+        );
+      this.caliperGaugeLineObj.getTransform().setLocalRotation(facingQuat);
+    }
+
+    // 3. TableReticleLabel stays centered in front of reticle facing camera
+    if (this.tableReticleLabel) {
+      const labelObj = this.tableReticleLabel.getSceneObject();
+      labelObj
+        .getTransform()
+        .setLocalPosition(
+          new vec3(basis.toCamX * 11.8, 2.0, basis.toCamZ * 11.8)
+        );
+      labelObj.getTransform().setLocalRotation(facingQuat);
+    }
+
+    // 4. All 5 radial zone handles stay along user's right silhouette of the clay
+    const actualRadiiMm = this.getActualRadiiMm();
+    const actualHeightCm = this.getActualHeightCm();
+    for (let i = 0; i < this.zoneHandles.length; i++) {
+      const slot = this.zoneHandles[i];
+      const radialDist = actualRadiiMm[i] / 10.0 + 0.9;
+      const frontBias = 1.8;
+      slot.sceneObject
+        .getTransform()
+        .setLocalPosition(
+          new vec3(
+            basis.rightX * radialDist + basis.toCamX * frontBias,
+            actualHeightCm * slot.heightFraction,
+            basis.rightZ * radialDist + basis.toCamZ * frontBias
+          )
+        );
+    }
+
+    // 5. PotterHandTool stays in the camera-facing cross-section plane with billboarded label
+    this.syncPotterHandToolTransform();
+  }
+
+  private syncPotterHandToolTransform(): void {
+    if (!this.potterHandToolObj) return;
+    const b = this.currentOrbitalBasis;
+    this.potterHandToolObj
+      .getTransform()
+      .setLocalPosition(
+        new vec3(
+          b.rightX * this.potterToolPlaneX,
+          this.potterToolPlaneY,
+          b.rightZ * this.potterToolPlaneX
+        )
+      );
+    this.potterHandToolObj
+      .getTransform()
+      .setLocalRotation(quat.fromEulerAngles(0, b.yawRad, 0));
   }
 
   private updateOffscreenGuidance(): void {
@@ -1108,15 +1450,30 @@ export class TerraFormController extends BaseScriptComponent {
       }
     }
 
-    // Reposition & recolor all 5 radial zone handles along the live clay silhouette
+    // Show glowing table reticle & prompt ONLY during Step 1 (DETECT_TABLE)
+    const showReticle = this.flowStage === "DETECT_TABLE";
+    if (this.tableReticleObj) {
+      this.tableReticleObj.enabled = showReticle;
+    }
+    if (this.tableReticleLabel) {
+      this.tableReticleLabel.getSceneObject().enabled = showReticle;
+    }
+
+    // Reposition & recolor all 5 radial zone handles along the live clay silhouette (camera-aligned!)
     const actualRadiiMm = this.getActualRadiiMm();
+    const b = this.currentOrbitalBasis;
     for (let i = 0; i < this.zoneHandles.length; i++) {
       const slot = this.zoneHandles[i];
-      const radiusCm = actualRadiiMm[i] / 10.0;
+      const radialDist = actualRadiiMm[i] / 10.0 + 0.9;
+      const frontBias = 1.8;
       slot.sceneObject
         .getTransform()
         .setLocalPosition(
-          new vec3(radiusCm + 0.9, actualHeightCm * slot.heightFraction, 1.8)
+          new vec3(
+            b.rightX * radialDist + b.toCamX * frontBias,
+            actualHeightCm * slot.heightFraction,
+            b.rightZ * radialDist + b.toCamZ * frontBias
+          )
         );
       const handleColor = LatheMeshGenerator.colorForToleranceStatus(
         zoneStatuses[i],
@@ -1141,14 +1498,32 @@ export class TerraFormController extends BaseScriptComponent {
       this.recolorDiamondHandle(this.heightHandleBuilder, 1.1, heightColor);
     }
 
-    // Update UIKit Studio Card HUD
+    // Update UIKit Studio Card HUD with 3-step guided flow state
     if (this.studioUI) {
+      const massPreset = ClayStudioFlowEngine.getMassPreset(
+        this.selectedClayMass
+      );
+      const massShort =
+        massPreset.grams >= 1000
+          ? `${(massPreset.grams / 1000).toFixed(1)}kg`
+          : `${massPreset.grams}g`;
+      const stageHint =
+        this.flowStage === "DETECT_TABLE"
+          ? "1. Aim at table · Tap Lock Table"
+          : this.flowStage === "SELECT_CLAY"
+          ? "2. Pick clay mass & qty · Start"
+          : "3. Pull Globe up · Hand In/Out";
       this.studioUI.updateMetrics(
         KilnShrinkageEngine.getDisplayLabel(this.currentClayType),
         this.seriesTracker.getCounterLabel(),
         bellyStatus,
         combinedMatch,
-        this.currentVesselSpec.presetName
+        this.currentVesselSpec.presetName,
+        ClayStudioFlowEngine.getStageTitle(this.flowStage),
+        ClayStudioFlowEngine.getStageActionLabel(this.flowStage),
+        `Clay: ${massShort}`,
+        `Qty: ${this.seriesTracker.getTargetSeriesCount()} pcs`,
+        stageHint
       );
     }
 

@@ -508,4 +508,63 @@ export class LatheMeshGenerator {
       triangleCount: indices.length / 3,
     };
   }
+
+  /**
+   * Builds a glowing concentric table-detection reticle (MeshTopology.Lines)
+   * placed flat on the detected table surface during Step 1 (DETECT_TABLE).
+   */
+  public static buildTableReticle(
+    outerRadiusCm: number = 14.5,
+    innerRadiusCm: number = 9.5,
+    color: RgbaColor = OPTICAL_PALETTE.CYAN
+  ): LatheWireframeGeometry {
+    const vertices: number[] = [];
+    const indices: number[] = [];
+    const segments = 36;
+
+    const addCircle = (rad: number, y: number, c: RgbaColor) => {
+      const start = vertices.length / 7;
+      for (let i = 0; i < segments; i++) {
+        const theta = (i / segments) * Math.PI * 2.0;
+        vertices.push(
+          Math.cos(theta) * rad,
+          y,
+          Math.sin(theta) * rad,
+          c.r,
+          c.g,
+          c.b,
+          c.a
+        );
+        indices.push(start + i, start + ((i + 1) % segments));
+      }
+    };
+
+    const addLine = (
+      x0: number,
+      z0: number,
+      x1: number,
+      z1: number,
+      c: RgbaColor
+    ) => {
+      const start = vertices.length / 7;
+      vertices.push(x0, 0.15, z0, c.r, c.g, c.b, c.a);
+      vertices.push(x1, 0.15, z1, c.r, c.g, c.b, c.a);
+      indices.push(start, start + 1);
+    };
+
+    addCircle(outerRadiusCm, 0.15, color);
+    addCircle(innerRadiusCm, 0.15, OPTICAL_PALETTE.MATCH_TEAL);
+    // 4 cardinal crosshair ticks
+    addLine(-outerRadiusCm - 2.0, 0, -innerRadiusCm, 0, color);
+    addLine(innerRadiusCm, 0, outerRadiusCm + 2.0, 0, color);
+    addLine(0, -outerRadiusCm - 2.0, 0, -innerRadiusCm, color);
+    addLine(0, innerRadiusCm, 0, outerRadiusCm + 2.0, color);
+
+    return {
+      vertices,
+      indices,
+      vertexCount: vertices.length / 7,
+      lineSegmentCount: indices.length / 2,
+    };
+  }
 }
